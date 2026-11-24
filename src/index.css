@@ -1,0 +1,96 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --color-ink: #101828;
+  --color-forest: #187A54;
+  --color-forest-dark: #0F5C3E;
+  --color-forest-soft: #E7F5EE;
+  --color-canvas: #F1F5F3;
+  --color-coral: #FF6A4A;
+  --color-amber: #F4B740;
+  --color-violet: #7B6CF6;
+  --color-sky: #3BA0E6;
+  --color-rose: #F472B6;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+  }
+
+  body {
+    @apply antialiased;
+  }
+}
+
+@layer components {
+  .laras-card {
+    @apply bg-white rounded-[1.35rem] border border-black/4 shadow-[0_8px_30px_rgba(16,24,40,0.035)];
+  }
+
+  .laras-page-title {
+    @apply text-[1.65rem] sm:text-[1.85rem] font-extrabold tracking-tight text-ink leading-none;
+  }
+
+  .laras-page-sub {
+    @apply text-sm text-slate-500 font-medium mt-1.5;
+  }
+
+  .laras-kicker {
+    @apply text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400;
+  }
+
+  .laras-btn-primary {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 text-[13px] font-bold text-white bg-forest rounded-full hover:bg-forest-dark transition-colors shadow-[0_8px_18px_rgba(24,122,84,0.22)];
+  }
+
+  .laras-btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 text-[13px] font-bold text-ink bg-white border border-slate-200 rounded-full hover:bg-slate-50 transition-colors;
+  }
+
+  .laras-icon-btn {
+    @apply w-9 h-9 rounded-full border border-slate-200 bg-white flex items-center justify-center text-slate-500 hover:bg-slate-50 hover:text-ink transition-colors;
+  }
+
+  .pattern-hatch {
+    background-image: repeating-linear-gradient(
+      -52deg,
+      rgba(16, 24, 40, 0.09) 0 2px,
+      transparent 2px 7px
+    );
+  }
+
+  .pattern-hatch-green {
+    background-image: repeating-linear-gradient(
+      -52deg,
+      rgba(24, 122, 84, 0.38) 0 2px,
+      rgba(24, 122, 84, 0.08) 2px 6px
+    );
+  }
+
+  .pattern-hatch-coral {
+    background-image: repeating-linear-gradient(
+      -52deg,
+      rgba(255, 106, 74, 0.4) 0 2px,
+      rgba(255, 106, 74, 0.08) 2px 6px
+    );
+  }
+
+  .pattern-wave {
+    background-image:
+      radial-gradient(circle at 120% 20%, rgba(255, 255, 255, 0.16), transparent 42%),
+      repeating-radial-gradient(circle at 0 120%, rgba(255, 255, 255, 0.08) 0 12px, transparent 12px 28px);
+  }
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
