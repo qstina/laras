@@ -8,6 +8,7 @@ import {
   User,
   MessageSquare,
   AlertCircle,
+  Clock,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 
@@ -16,6 +17,8 @@ interface SchoolMember {
   full_name: string;
   role: string;
   position?: string | null;
+  email?: string | null;
+  isPendingInvite?: boolean;
 }
 
 interface ConversationRow {
@@ -72,6 +75,7 @@ export default function MessagesPopover({
   onToggle,
 }: MessagesPopoverProps) {
   const [members, setMembers] = useState<SchoolMember[]>([]);
+  const [pendingInvites, setPendingInvites] = useState<SchoolMember[]>([]);
   const [conversations, setConversations] = useState<ConversationRow[]>([]);
   const [unreadByConv, setUnreadByConv] = useState<Record<string, number>>({});
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
@@ -92,13 +96,19 @@ export default function MessagesPopover({
     if (!userId || !schoolId) return;
     setIsLoadingList(true);
     try {
-      const [membersRes, convsRes, unreadRes] = await Promise.all([
+      const [membersRes, invitesRes, convsRes, unreadRes] = await Promise.all([
         supabase
           .from('profiles')
-          .select('id, full_name, role, position')
+          .select('id, full_name, role, position, email')
           .eq('school_id', schoolId)
           .neq('id', userId)
           .order('full_name', { ascending: true }),
+        supabase
+          .from('invitations')
+          .select('id, email, role, used, created_at')
+          .eq('school_id', schoolId)
+          .eq('used', false)
+          .order('created_at', { ascending: false }),
         supabase
           .from('school_conversations')
           .select('*')
@@ -113,7 +123,24 @@ export default function MessagesPopover({
           .eq('is_read', false),
       ]);
 
-      if (membersRes.data) setMembers(membersRes.data as SchoolMember[]);
+      const activeMembers = (membersRes.data || []) as SchoolMember[];
+      setMembers(activeMembers);
+
+      const registeredEmails = new Set(
+        activeMembers.map((m) => (m.email || '').toLowerCase()).filter(Boolean)
+      );
+
+      const pendingList: SchoolMember[] = (invitesRes.data || [])
+        .filter((inv: any) => inv.email && !registeredEmails.has(inv.email.toLowerCase()))
+        .map((inv: any) => ({
+          id: `invite-${inv.id}`,
+          full_name: inv.email,
+          email: inv.email,
+          role: inv.role || 'teacher',
+          isPendingInvite: true,
+        }));
+      setPendingInvites(pendingList);
+
       if (convsRes.data) setConversations(convsRes.data as ConversationRow[]);
 
       const counts: Record<string, number> = {};
@@ -130,7 +157,13 @@ export default function MessagesPopover({
     loadSchoolMembersAndConversations();
   }, [loadSchoolMembersAndConversations]);
 
-  // Load thread messages & mark incoming unread messages as read
+  // Reload list whenever user opens the popover so newly accepted invites appear immediately
+  useEffect(() => {
+    if (isOpen) {
+      loadSchoolMembersAndConversations();
+    }
+  }, [isOpen, loadSchoolMembersAndConversations]);
+
   const openConversation = useCallback(
     async (convId: string) => {
       if (!userId || !schoolId) return;
@@ -151,7 +184,6 @@ export default function MessagesPopover({
           setMessages(data as MessageRow[]);
         }
 
-        // Mark unread messages in this thread as read
         if ((unreadByConv[convId] || 0) > 0) {
           setUnreadByConv((prev) => ({ ...prev, [convId]: 0 }));
           await supabase
@@ -174,7 +206,6 @@ export default function MessagesPopover({
     }
   }, [isOpen, activeConvId, messages.length]);
 
-  // Realtime subscription for incoming/outgoing school messages
   useEffect(() => {
     if (!userId || !schoolId) return;
 
@@ -192,7 +223,6 @@ export default function MessagesPopover({
           const msg = payload.new as MessageRow;
           if (msg.sender_id !== userId && msg.recipient_id !== userId) return;
 
-          // Refresh conversation ordering
           await loadSchoolMembersAndConversations();
 
           if (activeConvId === msg.conversation_id) {
@@ -220,10 +250,9 @@ export default function MessagesPopover({
   }, [userId, schoolId, activeConvId, isOpen, loadSchoolMembersAndConversations]);
 
   const startConversationWithMember = async (member: SchoolMember) => {
-    if (!userId || !schoolId) return;
+    if (!userId || !schoolId || member.isPendingInvite) return;
     setErrorMsg(null);
 
-    // Reuse existing conversation if already created
     const existing = conversations.find(
       (c) =>
         (c.participant_a === userId && c.participant_b === member.id) ||
@@ -306,8 +335,8 @@ export default function MessagesPopover({
     return (
       members.find((m) => m.id === otherId) || {
         id: otherId,
-        full_name: 'Warga Sekolah',
-        role: 'staff',
+        full_name: 'Guru Dijemput',
+        role: 'teacher',
       }
     );
   };
@@ -355,7 +384,7 @@ export default function MessagesPopover({
                   </h3>
                   {!isComposingNew && activePartner && (
                     <p className="text-[10px] text-slate-400 truncate">
-                      {activePartner.role === 'admin' ? 'Pentadbir Sekolah' : 'Staf / Guru'}
+                      {activePartner.role === 'admin' ? 'Pentadbir Sekolah' : 'Guru Dijemput'}
                     </p>
                   )}
                 </div>
@@ -391,35 +420,60 @@ export default function MessagesPopover({
             </div>
           )}
 
-          {/* View 1: Select Colleague to Start Conversation */}
+          {/* View 1: Select Invited Teacher / School Admin to Start Conversation */}
           {isComposingNew ? (
             <div className="max-h-80 overflow-y-auto divide-y divide-slate-100">
               <div className="px-4 py-2 bg-slate-50 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                Pilih Warga Sekolah
+                Pilih Warga &amp; Guru Dijemput
               </div>
-              {members.length === 0 ? (
-                <div className="py-8 px-4 text-center text-xs text-slate-400">
-                  Tiada ahli lain berdaftar di sekolah ini lagi.
+
+              {members.length === 0 && pendingInvites.length === 0 ? (
+                <div className="py-8 px-4 text-center">
+                  <p className="text-xs font-semibold text-ink">Tiada guru dijemput lagi</p>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Jemput guru di halaman Tetapan → Jemputan Staf untuk mula bermesej.
+                  </p>
                 </div>
               ) : (
-                members.map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => startConversationWithMember(m)}
-                    className="w-full px-4 py-3 text-left flex items-center gap-3 hover:bg-slate-50 transition-colors"
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-ink shrink-0">
-                      <User size={14} />
+                <>
+                  {members.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => startConversationWithMember(m)}
+                      className="w-full px-4 py-3 text-left flex items-center gap-3 hover:bg-slate-50 transition-colors"
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-ink shrink-0">
+                        <User size={14} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-semibold text-ink truncate">{m.full_name}</p>
+                        <p className="text-[11px] text-slate-400 truncate">
+                          {m.role === 'admin'
+                            ? 'Pentadbir Sekolah'
+                            : m.position || 'Guru Dijemput (Aktif)'}
+                        </p>
+                      </div>
+                    </button>
+                  ))}
+
+                  {pendingInvites.map((inv) => (
+                    <div
+                      key={inv.id}
+                      className="w-full px-4 py-3 text-left flex items-center gap-3 bg-slate-50/50 opacity-75"
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400 shrink-0">
+                        <Clock size={14} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-medium text-slate-700 truncate">{inv.full_name}</p>
+                        <p className="text-[10px] text-amber font-semibold mt-0.5">
+                          Jemputan dihantar • Menunggu guru daftar akaun
+                        </p>
+                      </div>
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-semibold text-ink truncate">{m.full_name}</p>
-                      <p className="text-[11px] text-slate-400 truncate">
-                        {m.role === 'admin' ? 'Pentadbir Sekolah' : m.position || 'Staf / Guru'}
-                      </p>
-                    </div>
-                  </button>
-                ))
+                  ))}
+                </>
               )}
             </div>
           ) : activeConversation ? (
@@ -505,7 +559,7 @@ export default function MessagesPopover({
                   <Mail size={22} className="mx-auto text-slate-300 mb-2" />
                   <p className="text-xs font-semibold text-ink">Tiada perbualan lagi</p>
                   <p className="text-[11px] text-slate-400 mt-0.5 mb-3">
-                    Hubungi pentadbir atau rakan guru di sekolah anda secara terus.
+                    Hubungi pentadbir atau guru yang dijemput di sekolah anda secara terus.
                   </p>
                   <button
                     type="button"
