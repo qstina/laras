@@ -3,29 +3,37 @@ import { Link } from 'react-router-dom';
 import {
   Sparkles,
   Loader2,
-  AlertTriangle,
   X,
-  CheckCircle2,
   Save,
   Edit3,
   Settings2,
   ArrowRight,
   Trash2,
-  AlertCircle,
   Search,
   PieChart,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import {
-  generateAutoAssignPreview,
   getSchoolWorkloadSettings,
   DEFAULT_WORKLOAD_SETTINGS,
+  type AutoAssignMode,
 } from '../lib/autoAssignEngine';
+import type {
+  ExistingAssignment,
+  ExistingCommittee,
+  TeacherProfile,
+} from '../types/autoAssign';
+import {
+  AutoAssignReviewModal,
+  type ApprovedAssignmentRow,
+} from '../components/AutoAssignReviewModal';
 import {
   computeWorkloadAnalytics,
   type StaffWorkloadItem,
   type StaffCommitteeRecord,
 } from '../utils/workloadAnalytics';
+
+const CURRENT_ACADEMIC_SESSION = '2026/2027';
 
 export default function WorkloadManager() {
   const [statusFilter, setStatusFilter] = useState<'Semua' | 'Tinggi' | 'Seimbang' | 'Rendah'>('Semua');
@@ -34,15 +42,12 @@ export default function WorkloadManager() {
 
   const [rawStaffList, setRawStaffList] = useState<any[]>([]);
   const [committeesList, setCommitteesList] = useState<any[]>([]);
-  const [baseWorkloads, setBaseWorkloads] = useState<Record<string, number>>({});
   const [workloadSettings, setWorkloadSettings] = useState(DEFAULT_WORKLOAD_SETTINGS);
   const [isLoading, setIsLoading] = useState(true);
   const [schoolId, setSchoolId] = useState<string | null>(null);
 
-  // Auto-assign preview state
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isSavingProposals, setIsSavingProposals] = useState(false);
-  const [proposals, setProposals] = useState<any[] | null>(null);
+  // Auto-assign review modal state
+  const [isAutoAssignOpen, setIsAutoAssignOpen] = useState(false);
 
   // Settings drawer state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -86,8 +91,19 @@ export default function WorkloadManager() {
         .from('staff')
         .select(
           `
-          id, name, type, jawatan, gred, department,
-          staff_committees ( id, workload_weightage, committee_id, role, academic_session, committees ( id, name, category ) )
+          id, name, type, jawatan, gred, department, status,
+          staff_committees (
+            id,
+            staff_id,
+            committee_id,
+            role,
+            workload_weightage,
+            academic_session,
+            is_locked,
+            is_auto_assigned,
+            slot_order,
+            committees ( id, name, category )
+          )
         `
         )
         .eq('school_id', currentSchoolId)
@@ -95,21 +111,13 @@ export default function WorkloadManager() {
         .order('name'),
       supabase
         .from('committees')
-        .select('id, name, category, sub_category, parent_committee_id')
+        .select('id, name, category, sub_category, unit_code, parent_committee_id, default_positions')
         .eq('school_id', currentSchoolId),
     ]);
 
     if (!staffErr && staff) {
       setRawStaffList(staff);
       setCommitteesList(committees || []);
-
-      const bw: Record<string, number> = {};
-      staff.forEach((s: any) => {
-        let pts = 0;
-        s.staff_committees?.forEach((sc: any) => (pts += Number(sc.workload_weightage) || 0));
-        bw[s.id] = pts;
-      });
-      setBaseWorkloads(bw);
     }
     setIsLoading(false);
   }
@@ -117,6 +125,55 @@ export default function WorkloadManager() {
   useEffect(() => {
     calculateWorkloads();
   }, []);
+
+  // Typed inputs for AutoAssignReviewModal
+  const teacherProfiles: TeacherProfile[] = useMemo(
+    () =>
+      rawStaffList.map((s) => ({
+        id: s.id,
+        name: s.name,
+        jawatan: s.jawatan || 'Guru Biasa',
+        type: s.type || 'Guru',
+        gred: s.gred || undefined,
+        department: s.department || undefined,
+        status: s.status || 'Aktif',
+      })),
+    [rawStaffList]
+  );
+
+  const existingCommittees: ExistingCommittee[] = useMemo(
+    () =>
+      committeesList.map((c) => ({
+        id: c.id,
+        category: c.category || 'Lain-lain',
+        sub_category: c.sub_category ?? null,
+        unit_code: c.unit_code ?? null,
+        name: c.name,
+        parent_committee_id: c.parent_committee_id ?? null,
+        default_positions: Array.isArray(c.default_positions) ? c.default_positions : undefined,
+      })),
+    [committeesList]
+  );
+
+  const existingAssignments: ExistingAssignment[] = useMemo(() => {
+    const rows: ExistingAssignment[] = [];
+    rawStaffList.forEach((s) => {
+      (s.staff_committees || []).forEach((sc: any) => {
+        rows.push({
+          id: sc.id,
+          staff_id: sc.staff_id || s.id,
+          committee_id: sc.committee_id,
+          role: sc.role,
+          workload_weightage: Number(sc.workload_weightage) || 0,
+          academic_session: sc.academic_session || CURRENT_ACADEMIC_SESSION,
+          is_locked: Boolean(sc.is_locked),
+          is_auto_assigned: Boolean(sc.is_auto_assigned),
+          slot_order: typeof sc.slot_order === 'number' ? sc.slot_order : undefined,
+        });
+      });
+    });
+    return rows;
+  }, [rawStaffList]);
 
   // Derive analytics & dynamic major Jawatankuasa columns from single source of truth
   const analytics = useMemo(
@@ -148,100 +205,81 @@ export default function WorkloadManager() {
     });
   }, [analytics.staffItems, statusFilter, searchQuery]);
 
-  // --- AUTO ASSIGN LOGIC ---
-  const handleGeneratePreview = async () => {
+  // --- SAVE APPROVED AUTO-ASSIGNMENTS ---
+  const handleConfirmAutoAssign = async (
+    approvedRows: ApprovedAssignmentRow[],
+    mode: AutoAssignMode
+  ) => {
     if (!schoolId) return;
-    setIsGenerating(true);
-    try {
-      const result = await generateAutoAssignPreview(schoolId);
-      const editableRows = result.proposals
-        .filter((p) => p.status === 'assigned' && !p.isLocked && p.selectedCandidate)
-        .map((p) => ({
-          proposalId: p.proposalId,
-          staff_id: p.selectedCandidate!.staffId,
-          staff_name: p.selectedCandidate!.staffName,
-          staff_jawatan: p.selectedCandidate!.jawatan,
-          committee_id: p.committeeId,
-          committee_name: p.committeeName,
-          committee_category: p.category,
-          role: p.role,
-          workload_weightage: p.weightage,
-          is_manual_override: false,
-          reason: p.selectedCandidate!.reasons.slice(0, 2).join(' • '),
-        }));
-      setProposals(editableRows);
-    } catch (err: any) {
-      alert('Peringatan Sistem:\n\n' + err.message);
-    } finally {
-      setIsGenerating(false);
-    }
-  };
 
-  const handleStaffSwap = (proposalIndex: number, newStaffId: string) => {
-    if (!proposals) return;
-    const newStaff = rawStaffList.find((s) => s.id === newStaffId);
-    if (!newStaff) return;
+    if (mode === 'regenerate_all') {
+      const unlockedIds = existingAssignments
+        .filter((a) => !a.is_locked && a.id)
+        .map((a) => a.id as string);
 
-    const targetProposal = proposals[proposalIndex];
-    const existsInDb = newStaff.staff_committees?.some(
-      (sc: any) => sc.committee_id === targetProposal.committee_id
-    );
-    const existsInProposals = proposals.some(
-      (p, i) =>
-        i !== proposalIndex &&
-        p.committee_id === targetProposal.committee_id &&
-        p.staff_id === newStaffId
-    );
+      if (unlockedIds.length > 0) {
+        const { error: deleteErr } = await supabase
+          .from('staff_committees')
+          .delete()
+          .in('id', unlockedIds);
+        if (deleteErr) {
+          alert('Gagal mengosongkan lantikan lama: ' + deleteErr.message);
+          throw deleteErr;
+        }
+      }
 
-    if (existsInDb || existsInProposals) {
-      alert('Ralat Pertindihan: Warga ini sudah menganggotai jawatankuasa ini.');
-      return;
-    }
-
-    const updatedProposals = [...proposals];
-    updatedProposals[proposalIndex] = {
-      ...targetProposal,
-      staff_id: newStaff.id,
-      staff_name: newStaff.name,
-      staff_jawatan: newStaff.jawatan ? `${newStaff.jawatan} (${newStaff.gred || '-'})` : '-',
-      is_manual_override: true,
-      reason: 'Disunting secara manual oleh Pentadbir',
-    };
-
-    setProposals(updatedProposals);
-  };
-
-  const getDynamicProjectedLoad = (staffId: string) => {
-    const basePts = baseWorkloads[staffId] || 0;
-    const proposedPts =
-      proposals
-        ?.filter((p) => p.staff_id === staffId)
-        .reduce((sum, p) => sum + p.workload_weightage, 0) || 0;
-    return Math.round(((basePts + proposedPts) / workloadSettings.reference_points) * 100);
-  };
-
-  const handleApplyProposals = async () => {
-    if (!proposals || !schoolId) return;
-    setIsSavingProposals(true);
-    try {
-      const rowsToInsert = proposals.map((p) => ({
-        staff_id: p.staff_id,
-        committee_id: p.committee_id,
+      const rowsToInsert = approvedRows.map((row) => ({
+        staff_id: row.staff_id,
+        committee_id: row.committee_id,
         school_id: schoolId,
-        role: p.role,
-        workload_weightage: p.workload_weightage,
-        academic_session: '2026/2027',
-        is_auto_assigned: !p.is_manual_override,
+        role: row.role,
+        workload_weightage: row.workload_weightage,
+        academic_session: row.academic_session || CURRENT_ACADEMIC_SESSION,
+        is_locked: row.is_locked,
+        is_auto_assigned: row.is_auto_assigned,
+        slot_order: row.slot_order,
       }));
-      const { error } = await supabase.from('staff_committees').insert(rowsToInsert);
-      if (error) throw error;
-      setProposals(null);
-      calculateWorkloads();
-    } catch (err: any) {
-      alert('Gagal menyimpan agihan: ' + err.message);
-    } finally {
-      setIsSavingProposals(false);
+
+      if (rowsToInsert.length > 0) {
+        const { error: insertErr } = await supabase
+          .from('staff_committees')
+          .insert(rowsToInsert);
+        if (insertErr) {
+          alert('Gagal menyimpan agihan baharu: ' + insertErr.message);
+          throw insertErr;
+        }
+      }
+    } else {
+      const existingKeys = new Set(
+        existingAssignments.map((a) => `${a.committee_id}::${a.staff_id}::${a.role}`)
+      );
+
+      const newRows = approvedRows
+        .filter((row) => !existingKeys.has(`${row.committee_id}::${row.staff_id}::${row.role}`))
+        .map((row) => ({
+          staff_id: row.staff_id,
+          committee_id: row.committee_id,
+          school_id: schoolId,
+          role: row.role,
+          workload_weightage: row.workload_weightage,
+          academic_session: row.academic_session || CURRENT_ACADEMIC_SESSION,
+          is_locked: row.is_locked,
+          is_auto_assigned: row.is_auto_assigned,
+          slot_order: row.slot_order,
+        }));
+
+      if (newRows.length > 0) {
+        const { error: insertErr } = await supabase
+          .from('staff_committees')
+          .insert(newRows);
+        if (insertErr) {
+          alert('Gagal menyimpan cadangan baharu: ' + insertErr.message);
+          throw insertErr;
+        }
+      }
     }
+
+    await calculateWorkloads();
   };
 
   // --- SETTINGS LOGIC ---
@@ -358,11 +396,11 @@ export default function WorkloadManager() {
             <Settings2 size={14} /> Tetapan Beban
           </button>
           <button
-            onClick={handleGeneratePreview}
-            disabled={isGenerating}
+            onClick={() => setIsAutoAssignOpen(true)}
+            disabled={!schoolId}
             className="bg-ink hover:opacity-90 text-white rounded-lg font-medium h-9 px-4 text-xs flex items-center gap-1.5 transition-all disabled:opacity-50"
           >
-            {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+            <Sparkles size={14} />
             Jana Agihan Automatik
           </button>
         </div>
@@ -428,150 +466,17 @@ export default function WorkloadManager() {
         </div>
       </div>
 
-      {/* 1. AUTO ASSIGN INTERACTIVE PREVIEW MODAL */}
-      {proposals && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/40 backdrop-blur-[2px]">
-          <div className="bg-white rounded-xl border border-slate-200 w-full max-w-6xl overflow-hidden flex flex-col max-h-[90vh] shadow-2xl">
-            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50 shrink-0">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-ink/10 text-ink flex items-center justify-center border border-ink/20">
-                  <Sparkles size={16} />
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-ink">Semakan & Suntingan Agihan</h3>
-                  <p className="text-[11px] text-slate-500">
-                    {proposals.length} cadangan dijana. Anda boleh menukar guru sebelum pengesahan.
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setProposals(null)}
-                className="p-1.5 text-slate-400 hover:text-ink hover:bg-slate-200 rounded-lg transition-colors"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-auto bg-slate-50 p-5">
-              {proposals.length === 0 ? (
-                <div className="text-center py-12 text-slate-500">
-                  <CheckCircle2 size={48} className="mx-auto mb-3 text-slate-300" />
-                  <p className="text-sm font-medium">Tiada tugasan baharu dijana.</p>
-                  <p className="text-xs mt-1">Semua jawatan sudah diisi atau tiada padanan baharu.</p>
-                </div>
-              ) : (
-                <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-                  <table className="w-full text-left table-fixed">
-                    <thead className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold text-slate-400 uppercase tracking-wider sticky top-0 z-10 shadow-sm">
-                      <tr>
-                        <th className="px-4 py-3 w-1/4">Pilih Warga Pendidik</th>
-                        <th className="px-4 py-3 w-1/4">Jawatankuasa (Penempatan)</th>
-                        <th className="px-4 py-3 w-1/6">Peranan</th>
-                        <th className="px-4 py-3 w-1/4 hidden md:table-cell">Asas Pertimbangan</th>
-                        <th className="px-4 py-3 w-24 text-right">Beban (%)</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 text-xs">
-                      {proposals.map((p, idx) => {
-                        const currentDynamicLoad = getDynamicProjectedLoad(p.staff_id);
-                        return (
-                          <tr
-                            key={idx}
-                            className={`hover:bg-slate-50 transition-colors ${
-                              p.is_manual_override ? 'bg-sky/5' : ''
-                            }`}
-                          >
-                            <td className="px-4 py-3">
-                              <div className="relative">
-                                <select
-                                  value={p.staff_id}
-                                  onChange={(e) => handleStaffSwap(idx, e.target.value)}
-                                  className={`w-full appearance-none border rounded-lg pl-3 pr-8 py-2 outline-none transition-colors cursor-pointer text-xs font-semibold text-ellipsis overflow-hidden whitespace-nowrap
-                                    ${
-                                      p.is_manual_override
-                                        ? 'border-sky/30 bg-white text-sky-800'
-                                        : 'border-slate-200 bg-white text-ink hover:border-slate-300'
-                                    }
-                                  `}
-                                >
-                                  {rawStaffList.map((s) => (
-                                    <option key={s.id} value={s.id}>
-                                      {s.name} ({s.jawatan || '-'})
-                                    </option>
-                                  ))}
-                                </select>
-                                <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-slate-400">
-                                  <Edit3 size={12} />
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-4 py-3">
-                              <p className="font-medium text-slate-700 truncate">{p.committee_name}</p>
-                              <p className="text-[10px] text-slate-400 mt-0.5 truncate">
-                                {p.committee_category}
-                              </p>
-                            </td>
-                            <td className="px-4 py-3">
-                              <span className="px-2 py-1 bg-slate-100 border border-slate-200 rounded-md font-medium text-slate-700 truncate block">
-                                {p.role}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 text-slate-500 hidden md:table-cell text-[11px] leading-tight pr-4">
-                              {p.reason}
-                            </td>
-                            <td className="px-4 py-3 text-right">
-                              <div className="flex items-center justify-end gap-1.5">
-                                {currentDynamicLoad > 100 && (
-                                  <span title="Beban Tinggi">
-                                    <AlertTriangle size={12} className="text-rose" />
-                                  </span>
-                                )}
-                                <span
-                                  className={`font-bold ${
-                                    currentDynamicLoad > 100 ? 'text-rose' : 'text-ink'
-                                  }`}
-                                >
-                                  {currentDynamicLoad}%
-                                </span>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-
-            <div className="px-5 py-4 border-t border-slate-100 bg-white flex items-center justify-between shrink-0">
-              <p className="text-[11px] text-slate-500 flex items-center gap-1.5">
-                <AlertCircle size={14} /> Tugas manual sedia ada dilindungi dan tidak akan dipadamkan.
-              </p>
-              <div className="flex items-center gap-2.5">
-                <button
-                  onClick={() => setProposals(null)}
-                  className="px-4 py-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors"
-                >
-                  Batal
-                </button>
-                <button
-                  onClick={handleApplyProposals}
-                  disabled={isSavingProposals || proposals.length === 0}
-                  className="flex items-center gap-1.5 px-5 py-2.5 text-xs font-bold text-white bg-ink rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50"
-                >
-                  {isSavingProposals ? (
-                    <Loader2 size={14} className="animate-spin" />
-                  ) : (
-                    <Save size={14} />
-                  )}
-                  Sah & Simpan {proposals.length > 0 ? `(${proposals.length})` : ''}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* 1. AUTO ASSIGN REVIEW MODAL */}
+      <AutoAssignReviewModal
+        isOpen={isAutoAssignOpen}
+        onClose={() => setIsAutoAssignOpen(false)}
+        teachers={teacherProfiles}
+        committees={existingCommittees}
+        existingAssignments={existingAssignments}
+        academicSession={CURRENT_ACADEMIC_SESSION}
+        weights={workloadSettings.weights as Record<string, number>}
+        onConfirmSave={handleConfirmAutoAssign}
+      />
 
       {/* 2. SETTINGS MODAL */}
       {isSettingsOpen && (
