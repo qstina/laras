@@ -1,151 +1,178 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import {
-  FileText,
-  Sparkles,
-  BarChart3,
-  ChevronRight,
-  ChevronLeft,
-  ArrowUpRight,
-  Loader2,
+  Users,
+  AlertTriangle,
   Plus,
+  Upload,
+  Loader2,
+  Video,
+  MapPin,
+  Clock,
+  UserX,
+  ChevronRight,
+  CheckCircle2,
+  ClipboardList,
   Pencil,
   Trash2,
-  Clock,
   X,
-  Calendar as CalendarIcon,
   AlertCircle,
-  CheckCircle2,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import MonthCalendar, { toKey, type CalendarEvent } from '../components/MonthCalendar';
 
-interface SchoolEvent {
+type StaffRow = {
+  id: string | number;
+  name: string;
+  jawatan?: string;
+  gred?: string;
+  type?: string;
+  total: number;
+  committeeCount: number;
+  categories: string[];
+  issues: string[];
+};
+
+type EventTone = 'forest' | 'violet' | 'amber' | 'coral';
+
+type SchoolEventRow = {
   id: string;
   school_id: string;
   created_by: string;
   title: string;
-  event_date: string; // YYYY-MM-DD
-  start_time: string | null; // HH:MM:SS or HH:MM
+  event_date: string;
+  start_time: string | null;
   end_time: string | null;
   description: string | null;
-  category: string;
-  created_at: string;
+  tone: EventTone;
+};
+
+function initials(name?: string) {
+  if (!name) return '–';
+  return name
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join('')
+    .toUpperCase();
 }
 
-const MONTH_NAMES_MY = [
-  'Januari',
-  'Februari',
-  'Mac',
-  'April',
-  'Mei',
-  'Jun',
-  'Julai',
-  'Ogos',
-  'September',
-  'Oktober',
-  'November',
-  'Disember',
-];
-
-const WEEKDAYS_SHORT_MY = ['AHD', 'ISN', 'SEL', 'RAB', 'KHA', 'JUM', 'SAB'];
-
-function toDateKey(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+function greeting() {
+  const h = new Date().getHours();
+  if (h < 12) return 'Selamat pagi';
+  if (h < 15) return 'Selamat tengah hari';
+  if (h < 19) return 'Selamat petang';
+  return 'Selamat malam';
 }
 
-function formatTimeShort(timeStr?: string | null): string {
-  if (!timeStr) return '';
-  return timeStr.slice(0, 5);
+function formatTimeShort(t?: string | null) {
+  if (!t) return '';
+  return t.slice(0, 5);
 }
 
-function formatDisplayDateMY(dateKey: string): string {
-  const [y, m, d] = dateKey.split('-').map(Number);
-  if (!y || !m || !d) return dateKey;
-  return `${d} ${MONTH_NAMES_MY[m - 1]} ${y}`;
+function Cross({ className = '' }: { className?: string }) {
+  return (
+    <div className={`absolute pointer-events-none opacity-[0.03] ${className}`} aria-hidden>
+      <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1/3 rounded-lg bg-current" />
+      <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-1/3 rounded-lg bg-current" />
+    </div>
+  );
+}
+function Disc({ className = '' }: { className?: string }) {
+  return (
+    <div
+      className={`absolute rounded-full pointer-events-none opacity-[0.03] bg-current ${className}`}
+      aria-hidden
+    />
+  );
+}
+function Ring({ className = '' }: { className?: string }) {
+  return (
+    <div
+      className={`absolute rounded-full pointer-events-none opacity-[0.03] border-10 border-current ${className}`}
+      aria-hidden
+    />
+  );
+}
+
+function Stat({
+  value,
+  label,
+  caption,
+  light = false,
+}: {
+  value: number | string;
+  label: string;
+  caption?: string;
+  light?: boolean;
+}) {
+  return (
+    <div className="min-w-0 flex flex-col justify-end">
+      <p className="flex items-baseline gap-1.5">
+        <span className={`font-semibold text-2xl tracking-tight ${light ? 'text-ink' : 'text-ink'}`}>
+          {value}
+        </span>
+      </p>
+      <p className={`font-medium text-xs mt-0.5 ${light ? 'text-ink/70' : 'text-slate-500'}`}>
+        {label}
+      </p>
+      {caption && (
+        <p
+          className={`text-[10px] font-semibold uppercase tracking-wider mt-1.5 ${
+            light ? 'text-ink/60' : 'text-slate-400'
+          }`}
+        >
+          {caption}
+        </p>
+      )}
+    </div>
+  );
 }
 
 export default function AdminDashboard() {
-  const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(true);
-  const [userProfile, setUserProfile] = useState<any>(null);
-  const [school, setSchool] = useState<any>(null);
-
-  // Core school data
-  const [staffList, setStaffList] = useState<any[]>([]);
-  const [committees, setCommittees] = useState<any[]>([]);
-  const [assignments, setAssignments] = useState<any[]>([]);
-  const [rosters, setRosters] = useState<any[]>([]);
-
-  // Calendar & Events State
-  const todayKey = useMemo(() => toDateKey(new Date()), []);
-  const [viewDate, setViewDate] = useState<Date>(() => {
-    const now = new Date();
-    return new Date(now.getFullYear(), now.getMonth(), 1);
+  const [profile, setProfile] = useState<any>(null);
+  const [stats, setStats] = useState({ staff: 0, committees: 0, highWorkload: 0, readiness: 0 });
+  const [readinessDetails, setReadinessDetails] = useState({
+    staffComplete: 0,
+    commsAssigned: 0,
+    totalStaff: 0,
+    totalComms: 0,
   });
-  const [selectedDateKey, setSelectedDateKey] = useState<string>(() => toDateKey(new Date()));
-  const [events, setEvents] = useState<SchoolEvent[]>([]);
-  const [isLoadingEvents, setIsLoadingEvents] = useState(false);
+  const [workloadBalance, setWorkloadBalance] = useState({
+    tinggi: 0,
+    seimbang: 0,
+    rendah: 0,
+    tiada: 0,
+  });
+  const [categoryData, setCategoryData] = useState<
+    { name: string; Purata: number; Share: number }[]
+  >([]);
+  const [attentionList, setAttentionList] = useState<StaffRow[]>([]);
+  const [attentionCount, setAttentionCount] = useState(0);
+  const [selectedStaffId, setSelectedStaffId] = useState<string | number | null>(null);
 
-  // Add / Edit Event Modal State
-  const [isEventModalOpen, setIsEventModalOpen] = useState(false);
-  const [editingEvent, setEditingEvent] = useState<SchoolEvent | null>(null);
+  const [viewMonth, setViewMonth] = useState(
+    () => new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+  );
+  const [selectedDate, setSelectedDate] = useState(() => new Date());
+
+  // Persisted School Calendar Events
+  const [schoolEvents, setSchoolEvents] = useState<SchoolEventRow[]>([]);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingEvent, setEditingEvent] = useState<SchoolEventRow | null>(null);
   const [eventTitle, setEventTitle] = useState('');
   const [eventDate, setEventDate] = useState('');
   const [eventStartTime, setEventStartTime] = useState('');
   const [eventEndTime, setEventEndTime] = useState('');
   const [eventDescription, setEventDescription] = useState('');
+  const [eventTone, setEventTone] = useState<EventTone>('forest');
   const [isSavingEvent, setIsSavingEvent] = useState(false);
   const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
   const [eventError, setEventError] = useState<string | null>(null);
-  const [eventToast, setEventToast] = useState<string | null>(null);
-
-  useEffect(() => {
-    async function loadDashboard() {
-      setIsLoading(true);
-      try {
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-        if (!session?.user) return;
-
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', session.user.id)
-          .single();
-
-        if (!profile?.school_id) return;
-        setUserProfile(profile);
-
-        const [schoolRes, staffRes, commRes, assignRes, rosterRes] = await Promise.all([
-          supabase.from('schools').select('*').eq('id', profile.school_id).single(),
-          supabase.from('profiles').select('*').eq('school_id', profile.school_id),
-          supabase.from('committees').select('*').eq('school_id', profile.school_id),
-          supabase.from('committee_assignments').select('*').eq('school_id', profile.school_id),
-          supabase.from('duty_rosters').select('*').eq('school_id', profile.school_id),
-        ]);
-
-        if (schoolRes.data) setSchool(schoolRes.data);
-        if (staffRes.data) setStaffList(staffRes.data);
-        if (commRes.data) setCommittees(commRes.data);
-        if (assignRes.data) setAssignments(assignRes.data);
-        if (rosterRes.data) setRosters(rosterRes.data);
-
-        await fetchSchoolEvents(profile.school_id);
-      } catch (err) {
-        console.error('[LARAS Dashboard] Load error:', err);
-      } finally {
-        setIsLoading(false);
-      }
-    }
-    loadDashboard();
-  }, []);
 
   async function fetchSchoolEvents(schoolId: string) {
-    setIsLoadingEvents(true);
     const { data, error } = await supabase
       .from('school_events')
       .select('*')
@@ -154,90 +181,222 @@ export default function AdminDashboard() {
       .order('start_time', { ascending: true, nullsFirst: false });
 
     if (!error && data) {
-      setEvents(data);
+      setSchoolEvents(data as SchoolEventRow[]);
     }
-    setIsLoadingEvents(false);
   }
 
-  // Group events by YYYY-MM-DD
-  const eventsByDate = useMemo(() => {
-    const map: Record<string, SchoolEvent[]> = {};
-    for (const ev of events) {
-      if (!map[ev.event_date]) map[ev.event_date] = [];
-      map[ev.event_date].push(ev);
-    }
-    return map;
-  }, [events]);
+  useEffect(() => {
+    async function fetchDashboardData() {
+      setIsLoading(true);
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
 
-  // Selected date events
-  const selectedDateEvents = useMemo(
-    () => eventsByDate[selectedDateKey] || [],
-    [eventsByDate, selectedDateKey]
+        let schoolId: string | null = null;
+        if (session?.user) {
+          const { data: userProfile } = await supabase
+            .from('profiles')
+            .select('id, full_name, school_id, role')
+            .eq('id', session.user.id)
+            .single();
+          if (userProfile) {
+            setProfile(userProfile);
+            schoolId = userProfile.school_id;
+          }
+        }
+
+        const staffQuery = supabase.from('staff').select('name, jawatan, gred, type');
+        const commQuery = supabase.from('committees').select('id, staff_committees(id)');
+        const workloadQuery = supabase
+          .from('staff')
+          .select(
+            `id, name, jawatan, gred, type, staff_committees ( workload_weightage, committees ( category ) )`
+          );
+
+        if (schoolId) {
+          staffQuery.eq('school_id', schoolId);
+          commQuery.eq('school_id', schoolId);
+          workloadQuery.eq('school_id', schoolId);
+        }
+
+        const [{ data: staffList }, { data: commList }, { data: workload }] = await Promise.all([
+          staffQuery,
+          commQuery,
+          workloadQuery,
+        ]);
+
+        if (schoolId) {
+          await fetchSchoolEvents(schoolId);
+        }
+
+        const totalStaff = staffList?.length || 0;
+        const validStaff = staffList?.filter((s) => s.jawatan && s.gred && s.type) || [];
+
+        const totalComms = commList?.length || 0;
+        const validComms =
+          commList?.filter((c) => c.staff_committees && c.staff_committees.length > 0) || [];
+
+        const staffReadiness = totalStaff > 0 ? (validStaff.length / totalStaff) * 100 : 0;
+        const commReadiness = totalComms > 0 ? (validComms.length / totalComms) * 100 : 0;
+        const overallReadiness =
+          totalStaff > 0 && totalComms > 0 ? Math.round((staffReadiness + commReadiness) / 2) : 0;
+
+        let tinggi = 0,
+          seimbang = 0,
+          rendah = 0,
+          tiada = 0;
+        let totalSystemWeight = 0;
+        const catTotals: Record<string, number> = {
+          Kurikulum: 0,
+          'Hal Ehwal Murid': 0,
+          Kokurikulum: 0,
+          Pentadbiran: 0,
+        };
+        const rows: StaffRow[] = [];
+
+        workload?.forEach((s: any) => {
+          let total = 0;
+          const cats = new Set<string>();
+          const links = s.staff_committees || [];
+
+          if (links.length === 0) {
+            tiada++;
+          } else {
+            links.forEach((sc: any) => {
+              const weight = sc.workload_weightage || 0;
+              const cat = sc.committees?.category;
+              total += weight;
+              totalSystemWeight += weight;
+              if (cat) {
+                cats.add(cat);
+                if (cat in catTotals) catTotals[cat] += weight;
+              }
+            });
+            if (total > 85) tinggi++;
+            else if (total < 40) rendah++;
+            else seimbang++;
+          }
+
+          const issues: string[] = [];
+          if (!s.jawatan) issues.push('Jawatan kosong');
+          if (!s.gred) issues.push('Gred kosong');
+          if (links.length === 0) issues.push('Tiada jawatankuasa');
+          if (total > 85) issues.push('Beban tinggi');
+
+          rows.push({
+            id: s.id,
+            name: s.name,
+            jawatan: s.jawatan,
+            gred: s.gred,
+            type: s.type,
+            total,
+            committeeCount: links.length,
+            categories: Array.from(cats),
+            issues,
+          });
+        });
+
+        const needing = rows
+          .filter((r) => r.issues.length > 0)
+          .sort((a, b) => b.issues.length - a.issues.length || b.total - a.total);
+        const fallback = [...rows].sort((a, b) => b.total - a.total);
+        const list = (needing.length > 0 ? needing : fallback).slice(0, 6);
+
+        setStats({
+          staff: totalStaff,
+          committees: totalComms,
+          highWorkload: tinggi,
+          readiness: overallReadiness,
+        });
+        setReadinessDetails({
+          staffComplete: validStaff.length,
+          commsAssigned: validComms.length,
+          totalStaff,
+          totalComms,
+        });
+        setWorkloadBalance({ tinggi, seimbang, rendah, tiada });
+        setAttentionList(list);
+        setAttentionCount(needing.length);
+        setSelectedStaffId(list[0]?.id ?? null);
+
+        const pct = (n: number) =>
+          totalSystemWeight ? Math.round((n / totalSystemWeight) * 100) : 0;
+        const avg = (n: number) => (totalStaff ? Math.round(n / totalStaff) : 0);
+        setCategoryData([
+          {
+            name: 'Kurikulum',
+            Purata: avg(catTotals['Kurikulum']),
+            Share: pct(catTotals['Kurikulum']),
+          },
+          {
+            name: 'HEM',
+            Purata: avg(catTotals['Hal Ehwal Murid']),
+            Share: pct(catTotals['Hal Ehwal Murid']),
+          },
+          {
+            name: 'Koko',
+            Purata: avg(catTotals['Kokurikulum']),
+            Share: pct(catTotals['Kokurikulum']),
+          },
+          {
+            name: 'Admin',
+            Purata: avg(catTotals['Pentadbiran']),
+            Share: pct(catTotals['Pentadbiran']),
+          },
+        ]);
+      } catch (error) {
+        console.error('Failed to load dashboard data', error);
+      }
+      setIsLoading(false);
+    }
+    fetchDashboardData();
+  }, []);
+
+  // Map persisted DB events into MonthCalendar's CalendarEvent format
+  const calendarEvents: CalendarEvent[] = useMemo(
+    () =>
+      schoolEvents.map((ev) => ({
+        date: ev.event_date,
+        label: ev.title,
+        tone: (ev.tone || 'forest') as CalendarEvent['tone'],
+      })),
+    [schoolEvents]
   );
 
-  // Build calendar grid for viewDate
-  const calendarCells = useMemo(() => {
-    const year = viewDate.getFullYear();
-    const month = viewDate.getMonth();
-    const firstDayOfWeek = new Date(year, month, 1).getDay(); // 0 = Sun
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const selectedDateKey = toKey(selectedDate);
+  const selectedDayEvents = useMemo(
+    () => schoolEvents.filter((ev) => ev.event_date === selectedDateKey),
+    [schoolEvents, selectedDateKey]
+  );
 
-    const cells: Array<{ day: number | null; dateKey: string | null }> = [];
-    for (let i = 0; i < firstDayOfWeek; i++) {
-      cells.push({ day: null, dateKey: null });
-    }
-    for (let d = 1; d <= daysInMonth; d++) {
-      const cellDate = new Date(year, month, d);
-      cells.push({ day: d, dateKey: toDateKey(cellDate) });
-    }
-    return cells;
-  }, [viewDate]);
-
-  // Upcoming events for Takwim Minggu Ini (within next 7 days, fallback to next upcoming events)
-  const upcomingTakwim = useMemo(() => {
-    const upcoming = events.filter((ev) => ev.event_date >= todayKey);
-    return upcoming.slice(0, 4);
-  }, [events, todayKey]);
-
-  const handlePrevMonth = () => {
-    setViewDate((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
-  };
-
-  const handleNextMonth = () => {
-    setViewDate((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
-  };
-
-  const handleJumpToday = () => {
-    const now = new Date();
-    setViewDate(new Date(now.getFullYear(), now.getMonth(), 1));
-    setSelectedDateKey(toDateKey(now));
-  };
-
-  const openAddEventModal = (targetDateKey?: string) => {
+  const openAddModal = () => {
     setEditingEvent(null);
     setEventTitle('');
-    setEventDate(targetDateKey || selectedDateKey || todayKey);
+    setEventDate(selectedDateKey);
     setEventStartTime('');
     setEventEndTime('');
     setEventDescription('');
+    setEventTone('forest');
     setEventError(null);
-    setIsEventModalOpen(true);
+    setIsModalOpen(true);
   };
 
-  const openEditEventModal = (ev: SchoolEvent) => {
+  const openEditModal = (ev: SchoolEventRow) => {
     setEditingEvent(ev);
     setEventTitle(ev.title);
     setEventDate(ev.event_date);
     setEventStartTime(formatTimeShort(ev.start_time));
     setEventEndTime(formatTimeShort(ev.end_time));
     setEventDescription(ev.description || '');
+    setEventTone((ev.tone || 'forest') as EventTone);
     setEventError(null);
-    setIsEventModalOpen(true);
+    setIsModalOpen(true);
   };
 
   const handleSaveEvent = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userProfile?.school_id || !userProfile?.id) return;
+    if (!profile?.school_id || !profile?.id) return;
 
     const cleanTitle = eventTitle.trim();
     if (!cleanTitle) {
@@ -258,43 +417,38 @@ export default function AdminDashboard() {
 
     try {
       const payload = {
-        school_id: userProfile.school_id,
+        school_id: profile.school_id,
         title: cleanTitle,
         event_date: eventDate,
         start_time: eventStartTime ? `${eventStartTime}:00` : null,
         end_time: eventEndTime ? `${eventEndTime}:00` : null,
         description: eventDescription.trim() || null,
+        tone: eventTone,
       };
 
       if (editingEvent) {
-        const { error: updateErr } = await supabase
+        const { error } = await supabase
           .from('school_events')
           .update(payload)
           .eq('id', editingEvent.id)
-          .eq('school_id', userProfile.school_id);
-
-        if (updateErr) throw updateErr;
-        setEventToast('Acara berjaya dikemaskini.');
+          .eq('school_id', profile.school_id);
+        if (error) throw error;
       } else {
-        const { error: insertErr } = await supabase.from('school_events').insert({
+        const { error } = await supabase.from('school_events').insert({
           ...payload,
-          created_by: userProfile.id,
+          created_by: profile.id,
         });
-
-        if (insertErr) throw insertErr;
-        setEventToast('Acara baharu berjaya disimpan ke takwim.');
+        if (error) throw error;
       }
 
-      // Sync selected date & visible month to saved event date
-      setSelectedDateKey(eventDate);
-      const [y, m] = eventDate.split('-').map(Number);
-      if (y && m) {
-        setViewDate(new Date(y, m - 1, 1));
+      const [y, m, d] = eventDate.split('-').map(Number);
+      if (y && m && d) {
+        setSelectedDate(new Date(y, m - 1, d));
+        setViewMonth(new Date(y, m - 1, 1));
       }
 
-      await fetchSchoolEvents(userProfile.school_id);
-      setIsEventModalOpen(false);
-      window.setTimeout(() => setEventToast(null), 3000);
+      await fetchSchoolEvents(profile.school_id);
+      setIsModalOpen(false);
     } catch (err: any) {
       setEventError(err?.message || 'Gagal menyimpan acara. Sila cuba semula.');
     } finally {
@@ -302,613 +456,653 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleDeleteEvent = async (ev: SchoolEvent) => {
-    if (!userProfile?.school_id || deletingEventId) return;
+  const handleDeleteEvent = async (ev: SchoolEventRow) => {
+    if (!profile?.school_id || deletingEventId) return;
     setDeletingEventId(ev.id);
 
     try {
-      const { error: delErr } = await supabase
+      const { error } = await supabase
         .from('school_events')
         .delete()
         .eq('id', ev.id)
-        .eq('school_id', userProfile.school_id);
-
-      if (delErr) throw delErr;
-
-      await fetchSchoolEvents(userProfile.school_id);
-      setEventToast('Acara telah dipadam daripada takwim.');
-      window.setTimeout(() => setEventToast(null), 3000);
-    } catch (err: any) {
-      setEventError(err?.message || 'Gagal memadam acara.');
+        .eq('school_id', profile.school_id);
+      if (error) throw error;
+      await fetchSchoolEvents(profile.school_id);
+    } catch (err) {
+      console.error('Failed to delete event', err);
     } finally {
       setDeletingEventId(null);
     }
   };
 
+  const canModifyEvent = (ev: SchoolEventRow) =>
+    profile?.role === 'admin' || ev.created_by === profile?.id;
+
+  const firstName = profile?.full_name?.split(' ')[0] || 'Admin';
+  const maxCategory = Math.max(...categoryData.map((item) => item.Purata), 8);
+  const selectedStaff = attentionList.find((s) => s.id === selectedStaffId) || attentionList[0];
+
+  const isStaffComplete =
+    readinessDetails.totalStaff > 0 &&
+    readinessDetails.staffComplete === readinessDetails.totalStaff;
+  const isCommsComplete =
+    readinessDetails.totalComms > 0 &&
+    readinessDetails.commsAssigned === readinessDetails.totalComms;
+
+  const summary =
+    stats.staff === 0
+      ? 'Mulakan dengan menambah staf dan jawatankuasa untuk membina buku pengurusan sekolah.'
+      : `${stats.staff} warga sekolah dalam sistem. ${
+          attentionCount > 0 ? `${attentionCount} staf perlu disemak` : 'Semua maklumat staf kemas'
+        }${stats.highWorkload > 0 ? `, ${stats.highWorkload} berbeban tinggi.` : '.'}`;
+
+  const vibrantCategoryColors = ['bg-violet', 'bg-sky', 'bg-amber', 'bg-rose'];
+
+  let donutOffset = 0;
+  const workloadSegments = [
+    { label: 'Tiada', value: workloadBalance.tiada, color: '#e2e8f0', dot: 'bg-slate-200' },
+    { label: 'Rendah', value: workloadBalance.rendah, color: '#3BA0E6', dot: 'bg-sky' },
+    { label: 'Seimbang', value: workloadBalance.seimbang, color: '#187A54', dot: 'bg-forest' },
+    { label: 'Tinggi', value: workloadBalance.tinggi, color: '#F472B6', dot: 'bg-rose' },
+  ].filter((s) => s.value > 0);
+
   if (isLoading) {
     return (
-      <div className="h-[80vh] flex flex-col items-center justify-center gap-3 text-ink font-sans">
-        <Loader2 size={28} className="animate-spin text-ink" />
-        <p className="text-xs font-medium text-slate-400">Menyediakan ringkasan sekolah...</p>
+      <div className="flex h-full min-h-[60vh] items-center justify-center text-slate-400">
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
+          <p className="text-sm font-medium">Memuatkan ruang kerja...</p>
+        </div>
       </div>
     );
   }
 
-  // Real metrics (no hardcoded fake counts)
-  const totalStaff = staffList.length;
-  const activeAssignCount = assignments.length;
-  const assignedStaffIds = new Set(assignments.map((a) => a.staff_id).filter(Boolean));
-  const assignedStaffCount = assignedStaffIds.size;
-  const allocationRate =
-    totalStaff > 0 ? Math.min(100, Math.round((assignedStaffCount / totalStaff) * 100)) : 0;
+  const steps = [
+    {
+      label: 'Profil staf',
+      detail: `${readinessDetails.staffComplete} / ${readinessDetails.totalStaff} lengkap`,
+      done: isStaffComplete,
+      active: !isStaffComplete,
+    },
+    {
+      label: 'Jawatankuasa',
+      detail: `${readinessDetails.commsAssigned} / ${readinessDetails.totalComms} diagihkan`,
+      done: isCommsComplete,
+      active: isStaffComplete && !isCommsComplete,
+    },
+    {
+      label: 'Sedia dijana',
+      detail: 'Bersedia untuk dicetak',
+      done: stats.readiness === 100,
+      active: false,
+    },
+  ];
 
-  const firstName = userProfile?.full_name?.split(' ')[0] || 'Pentadbir';
-
-  // Display top 4 staff members with real workload tags
-  const displayedStaff = staffList.slice(0, 4).map((st) => {
-    const count = assignments.filter((a) => a.staff_id === st.id).length;
-    const isAdmin = st.role === 'admin';
-    return {
-      id: st.id,
-      name: st.full_name,
-      role: st.position || (isAdmin ? 'Pentadbir Sekolah' : 'Guru Akademik'),
-      status: isAdmin ? 'Pentadbir' : count > 0 ? `${count} Tugas` : 'Sedia',
-      statusColor: isAdmin
-        ? 'bg-sky/10 text-sky border-sky/20'
-        : count > 0
-          ? 'bg-forest/10 text-forest border-forest/20'
-          : 'bg-amber/10 text-amber border-amber/20',
-      initials: st.full_name ? st.full_name.substring(0, 2).toUpperCase() : 'GR',
-    };
-  });
-
-  const canModifyEvent = (ev: SchoolEvent) =>
-    userProfile?.role === 'admin' || ev.created_by === userProfile?.id;
+  const loadTone = (total: number) => (total > 85 ? 'bg-rose' : total < 40 ? 'bg-sky' : 'bg-forest');
 
   return (
-    <div className="max-w-384 mx-auto space-y-4 lg:space-y-6 font-sans">
-      {/* Feedback Toast Banner */}
-      {eventToast && (
-        <div className="p-3 bg-forest/10 border border-forest/20 rounded-xl flex items-center justify-between text-forest text-xs font-medium">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 size={15} className="shrink-0" />
-            <span>{eventToast}</span>
+    <div className="max-w-384 mx-auto grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6 pb-6">
+      {/* ================= LEFT / MAIN ================= */}
+      <div className="lg:col-span-8 xl:col-span-9 min-w-0 space-y-4 lg:space-y-6">
+        {/* Greeting */}
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-3 px-1">
+          <div className="min-w-0">
+            <h1 className="text-2xl sm:text-3xl font-semibold text-ink tracking-tight">
+              {greeting()}, {firstName}
+            </h1>
+            <p className="text-sm text-slate-500 mt-1 max-w-xl">{summary}</p>
           </div>
-          <button
-            type="button"
-            onClick={() => setEventToast(null)}
-            className="text-forest/70 hover:text-forest"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      )}
-
-      {/* Top Welcome Banner */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 px-1">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-semibold text-ink tracking-tight">
-            Selamat kembali, {firstName}
-          </h1>
-          <p className="text-sm text-slate-500 mt-1">
-            Ringkasan pengurusan {school?.name || 'sekolah'} &bull;{' '}
-            {new Date().toLocaleDateString('ms-MY', {
-              weekday: 'long',
-              day: 'numeric',
-              month: 'long',
-              year: 'numeric',
-            })}
-          </p>
-        </div>
-
-        {/* Quick Action Pills */}
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => navigate('/book-builder')}
-            className="flex items-center gap-2 px-3.5 py-2 bg-white border border-slate-200 hover:border-slate-300 rounded-lg text-xs font-semibold text-ink transition-all hover:bg-slate-50"
-          >
-            <FileText size={14} className="text-slate-500" />
-            Jana Buku Pengurusan
-          </button>
-          <button
-            type="button"
-            onClick={() => navigate('/workload')}
-            className="flex items-center gap-2 px-3.5 py-2 bg-white border border-slate-200 hover:border-slate-300 rounded-lg text-xs font-semibold text-ink transition-all hover:bg-slate-50"
-          >
-            <Sparkles size={14} className="text-amber" />
-            Agihan Tugas
-          </button>
-          <button
-            type="button"
-            onClick={() => navigate('/analytics')}
-            className="flex items-center gap-2 px-3.5 py-2 bg-ink hover:opacity-90 rounded-lg text-xs font-semibold text-white transition-opacity"
-          >
-            <BarChart3 size={14} />
-            Analisis
-          </button>
-        </div>
-      </div>
-
-      {/* Main 12-Col Bento Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6">
-        {/* Left 8 Columns */}
-        <div className="lg:col-span-8 flex flex-col gap-4 lg:gap-6">
-          {/* Top Row: 3 KPI Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 lg:gap-6">
-            {/* KPI 1 */}
-            <div
-              onClick={() => navigate('/teachers')}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => e.key === 'Enter' && navigate('/teachers')}
-              className="bg-white border border-slate-200 hover:border-slate-300 rounded-xl p-5 flex flex-col justify-between transition-colors cursor-pointer"
+          <div className="flex items-center gap-2 shrink-0">
+            <Link
+              to="/committees"
+              className="bg-ink hover:opacity-90 text-white rounded-lg font-medium h-9 px-4 text-xs flex items-center gap-1.5 transition-all"
             >
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-xs font-medium text-slate-500">Jumlah Guru & Staf</span>
-                <span className="text-[11px] font-bold text-forest bg-forest/10 border border-forest/20 px-2 py-0.5 rounded-md">
-                  Aktif
-                </span>
-              </div>
-              <div className="text-2xl lg:text-3xl font-bold text-ink tracking-tight">
-                {totalStaff}
-              </div>
-              <div className="flex items-center justify-between text-xs text-slate-400 mt-4 pt-3 border-t border-slate-100">
-                <span>Kakitangan berdaftar</span>
-                <ChevronRight size={14} />
-              </div>
-            </div>
-
-            {/* KPI 2 */}
-            <div
-              onClick={() => navigate('/committees')}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => e.key === 'Enter' && navigate('/committees')}
-              className="bg-white border border-slate-200 hover:border-slate-300 rounded-xl p-5 flex flex-col justify-between transition-colors cursor-pointer"
+              <Plus size={14} /> Tambah projek
+            </Link>
+            <Link
+              to="/book-builder"
+              className="bg-white border border-slate-200 text-ink hover:bg-slate-50 rounded-lg font-medium h-9 px-4 text-xs flex items-center gap-1.5 transition-colors"
             >
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-xs font-medium text-slate-500">Jawatankuasa Aktif</span>
-                <span className="text-[11px] font-bold text-sky bg-sky/10 border border-sky/20 px-2 py-0.5 rounded-md">
-                  Unit
-                </span>
-              </div>
-              <div className="text-2xl lg:text-3xl font-bold text-ink tracking-tight">
-                {committees.length || 0}
-              </div>
-              <div className="flex items-center justify-between text-xs text-slate-400 mt-4 pt-3 border-t border-slate-100">
-                <span>Kurikulum & HEM</span>
-                <ChevronRight size={14} />
-              </div>
-            </div>
-
-            {/* KPI 3 */}
-            <div
-              onClick={() => navigate('/reports')}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => e.key === 'Enter' && navigate('/reports')}
-              className="bg-white border border-slate-200 hover:border-slate-300 rounded-xl p-5 flex flex-col justify-between transition-colors cursor-pointer"
-            >
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-xs font-medium text-slate-500">Semakan Tugas</span>
-                <span className="text-[11px] font-bold text-amber bg-amber/10 border border-amber/20 px-2 py-0.5 rounded-md">
-                  {rosters.length} Jadual
-                </span>
-              </div>
-              <div className="text-2xl lg:text-3xl font-bold text-ink tracking-tight">
-                {activeAssignCount}
-              </div>
-              <div className="flex items-center justify-between text-xs text-slate-400 mt-4 pt-3 border-t border-slate-100">
-                <span>Lantikan & laporan</span>
-                <ChevronRight size={14} />
-              </div>
-            </div>
+              <Upload size={14} /> Jana buku
+            </Link>
           </div>
+        </div>
 
-          {/* Middle Row: Status Agihan Tugas */}
-          <div className="bg-white border border-slate-200 rounded-xl p-5 lg:p-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-5">
-              <div>
-                <h2 className="text-sm font-semibold text-ink">Status Agihan Tugas</h2>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Peratusan pengagihan jawatankuasa dan tugas rasmi sekolah
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => navigate('/workload')}
-                className="text-xs font-semibold text-ink hover:underline flex items-center gap-1 self-start sm:self-auto"
-              >
-                Lihat Semua <ArrowUpRight size={14} />
-              </button>
-            </div>
+        {/* Row 1: staff overview + category weighting */}
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4 lg:gap-6">
+          <section className="md:col-span-2 relative overflow-hidden bg-white border border-slate-200 rounded-xl p-4 lg:p-5 flex flex-col">
+            <h2 className="text-sm font-semibold text-ink mb-1">Beban Tugas</h2>
+            <p className="text-[11px] text-slate-500 mb-2">Agihan kapasiti kerja warga sekolah</p>
 
-            {/* Segmented Bar */}
-            <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden flex gap-0.5">
-              <div
-                style={{ width: `${allocationRate}%` }}
-                className="h-full bg-forest transition-all duration-500 rounded-l-full"
-              ></div>
-              <div
-                style={{ width: `${Math.max(0, 100 - allocationRate)}%` }}
-                className="h-full bg-amber transition-all duration-500 rounded-r-full"
-              ></div>
-            </div>
+            <div className="flex-1 flex flex-col items-center justify-center">
+              <div className="relative w-32 h-32 lg:w-40 lg:h-40">
+                <svg className="w-full h-full -rotate-90" viewBox="0 0 100 100">
+                  {stats.staff === 0 ? (
+                    <circle
+                      cx="50"
+                      cy="50"
+                      r="40"
+                      fill="none"
+                      stroke="#f1f5f9"
+                      strokeWidth="12"
+                    />
+                  ) : (
+                    workloadSegments.map((seg) => {
+                      const circ = 2 * Math.PI * 40;
+                      const length = (seg.value / Math.max(stats.staff, 1)) * circ;
+                      const dash = Math.max(
+                        0.1,
+                        length - (workloadSegments.length > 1 ? 14 : 0)
+                      );
+                      const offset = donutOffset;
+                      donutOffset += length;
 
-            <div className="flex flex-wrap items-center justify-between gap-4 mt-4 pt-3 border-t border-slate-100 text-xs">
-              <div className="flex items-center gap-5">
-                <div className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-forest"></span>
-                  <span className="text-slate-600 font-medium">
-                    Telah Diagih ({assignedStaffCount}/{totalStaff} staf &bull; {allocationRate}%)
+                      return (
+                        <circle
+                          key={seg.label}
+                          cx="50"
+                          cy="50"
+                          r="40"
+                          fill="none"
+                          stroke={seg.color}
+                          strokeWidth="12"
+                          strokeLinecap="round"
+                          strokeDasharray={`${dash} ${circ}`}
+                          strokeDashoffset={-offset}
+                          className="transition-all duration-1000 ease-out"
+                        />
+                      );
+                    })
+                  )}
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-2xl lg:text-3xl font-bold text-ink tracking-tight">
+                    {stats.staff}
                   </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-amber"></span>
-                  <span className="text-slate-600 font-medium">
-                    Belum Diagih ({Math.max(0, totalStaff - assignedStaffCount)} staf)
+                  <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mt-0.5">
+                    Warga
                   </span>
                 </div>
               </div>
-              <span className="text-slate-400 font-medium">
-                {activeAssignCount} lantikan direkodkan
-              </span>
             </div>
-          </div>
 
-          {/* Bottom Row: 2 Sub-Cards (Senarai Guru + Takwim Minggu Ini) */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 lg:gap-6 flex-1">
-            {/* Left Sub-Card: Senarai Guru */}
-            <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col justify-between">
-              <div>
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-semibold text-ink">Senarai Guru</h3>
-                  <button
-                    type="button"
-                    onClick={() => navigate('/teachers')}
-                    className="w-7 h-7 rounded-lg border border-slate-200 flex items-center justify-center text-slate-500 hover:bg-slate-50 hover:text-ink transition-colors"
-                    title="Lihat direktori penuh"
-                  >
-                    <ArrowUpRight size={14} />
-                  </button>
+            <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 mt-4">
+              {workloadSegments.map((seg) => (
+                <div key={seg.label} className="flex items-center gap-1.5">
+                  <span className={`w-2.5 h-2.5 rounded-full ${seg.dot}`} />
+                  <span className="text-[11px] font-medium text-slate-600">{seg.label}</span>
+                  <span className="text-[11px] font-bold text-ink ml-0.5">{seg.value}</span>
                 </div>
+              ))}
+              {workloadSegments.length === 0 && (
+                <span className="text-[11px] font-medium text-slate-400">Tiada data</span>
+              )}
+            </div>
+          </section>
 
-                {displayedStaff.length === 0 ? (
-                  <p className="text-xs text-slate-400 py-6 text-center">
-                    Tiada rekod kakitangan dijumpai.
-                  </p>
-                ) : (
-                  <div className="space-y-2.5">
-                    {displayedStaff.map((staff) => (
+          <section className="md:col-span-3 relative overflow-hidden bg-white border border-slate-200 rounded-xl p-4 lg:p-5 min-h-56 flex flex-col">
+            <Ring className="w-36 h-36 -right-10 -top-12 text-ink" />
+            <div className="relative z-10 flex-1 flex flex-col">
+              <div className="flex items-start justify-between gap-3 mb-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-ink">Pemberatan tugas</h2>
+                  <p className="text-xs text-slate-500 mt-0.5">Purata mata beban setiap staf</p>
+                </div>
+                <Link
+                  to="/analytics"
+                  className="shrink-0 text-xs font-medium text-ink bg-slate-100 px-3 py-1.5 rounded-lg hover:bg-slate-200 transition-colors"
+                >
+                  Analisis
+                </Link>
+              </div>
+              <div className="mt-auto flex items-end justify-between gap-4 h-28">
+                {categoryData.map((item, index) => {
+                  const height = Math.max(15, Math.round((item.Purata / maxCategory) * 100));
+                  return (
+                    <div
+                      key={item.name}
+                      className="flex-1 h-full flex flex-col items-center justify-end gap-1.5"
+                    >
+                      <span className="text-xs font-semibold text-ink">{item.Purata}</span>
                       <div
-                        key={staff.id}
-                        onClick={() => navigate('/teachers')}
-                        className="flex items-center justify-between p-2.5 rounded-lg border border-slate-100 hover:border-slate-200 hover:bg-slate-50/70 transition-colors cursor-pointer"
+                        className={`w-full max-w-12 rounded-sm ${
+                          vibrantCategoryColors[index % vibrantCategoryColors.length]
+                        }`}
+                        style={{ height: `${height}%` }}
+                      />
+                      <span className="text-[11px] font-medium text-slate-600 mt-0.5">
+                        {item.name}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </section>
+        </div>
+
+        {/* Row 2: book readiness, committees, high workload */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 lg:gap-6">
+          <section className="relative overflow-hidden rounded-xl bg-ink text-white p-4 lg:p-5">
+            <Disc className="w-28 h-28 -right-8 -bottom-10 text-white" />
+            <div className="relative z-10">
+              <div className="flex items-start justify-between">
+                <h2 className="text-sm font-semibold text-slate-100">Buku pengurusan</h2>
+                <span className="text-2xl font-semibold leading-none">{stats.readiness}%</span>
+              </div>
+              <div className="h-2 rounded-sm bg-white/10 overflow-hidden mt-4">
+                <div
+                  className="h-full rounded-sm bg-sky transition-all"
+                  style={{ width: `${Math.max(stats.readiness, 4)}%` }}
+                />
+              </div>
+              <ul className="mt-4 space-y-2.5">
+                {steps.map((step) => (
+                  <li key={step.label} className="flex items-center gap-2.5">
+                    <span
+                      className={`w-4 h-4 rounded-md flex items-center justify-center shrink-0 ${
+                        step.done
+                          ? 'bg-forest text-white'
+                          : step.active
+                            ? 'bg-white/20 text-white'
+                            : 'bg-white/5 text-white/30'
+                      }`}
+                    >
+                      {step.done ? (
+                        <CheckCircle2 size={10} strokeWidth={3} />
+                      ) : (
+                        <span className="w-1.5 h-1.5 rounded-sm bg-current" />
+                      )}
+                    </span>
+                    <div className="min-w-0">
+                      <p
+                        className={`text-xs font-medium leading-none ${
+                          step.done || step.active ? 'text-white' : 'text-slate-400'
+                        }`}
                       >
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <div className="w-8 h-8 rounded-lg bg-slate-100 border border-slate-200 text-ink flex items-center justify-center text-[11px] font-bold shrink-0">
-                            {staff.initials}
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-xs font-semibold text-ink truncate">{staff.name}</p>
-                            <p className="text-[11px] text-slate-400 truncate">{staff.role}</p>
-                          </div>
-                        </div>
-                        <span
-                          className={`text-[10px] font-semibold px-2 py-0.5 rounded-md border shrink-0 ml-2 ${staff.statusColor}`}
-                        >
-                          {staff.status}
-                        </span>
+                        {step.label}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </section>
+
+          <section className="relative overflow-hidden rounded-xl bg-amber p-4 lg:p-5 text-ink flex flex-col">
+            <Cross className="w-16 h-16 -right-3 -bottom-3 -rotate-12 text-ink" />
+            <div className="relative z-10 flex-1 flex flex-col">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-sm font-semibold tracking-wide text-ink/80">Jawatankuasa</h2>
+                <div className="w-6 h-6 rounded-md bg-white/40 flex items-center justify-center">
+                  <ClipboardList size={12} className="text-ink" />
+                </div>
+              </div>
+              <div className="flex gap-4 mb-4">
+                <Stat value={stats.committees} label="Jumlah" light />
+                <Stat value={readinessDetails.commsAssigned} label="Diagih" light />
+              </div>
+              <Link
+                to="/committees"
+                className="mt-auto inline-flex items-center justify-center gap-1.5 text-xs font-medium text-ink bg-transparent border border-ink/20 py-2 rounded-lg hover:bg-ink/5 transition-colors"
+              >
+                Urus tugasan
+              </Link>
+            </div>
+          </section>
+
+          <section className="relative overflow-hidden bg-white border border-slate-200 rounded-xl p-4 lg:p-5 flex flex-col">
+            <div className="relative z-10 flex-1">
+              <div className="flex items-center gap-2 mb-3">
+                <h2 className="text-sm font-semibold text-ink">Beban tinggi</h2>
+                <AlertTriangle size={14} className="text-rose" />
+              </div>
+              <div className="flex items-end gap-2">
+                <span className="text-3xl font-semibold leading-none text-rose">
+                  {stats.highWorkload}
+                </span>
+                <span className="text-xs font-medium text-slate-500 mb-1">staf ({'>'}85 mata)</span>
+              </div>
+              <p className="text-xs text-slate-500 mt-2.5 leading-relaxed">
+                {stats.highWorkload > 0
+                  ? 'Pertimbangkan mengagih semula tugasan untuk mengimbangi beban.'
+                  : 'Tiada staf melebihi had beban buat masa ini.'}
+              </p>
+            </div>
+            {stats.highWorkload > 0 && (
+              <div className="mt-3">
+                <Link
+                  to="/workload"
+                  className="inline-flex items-center gap-1 text-xs font-medium text-rose hover:brightness-90 transition-all"
+                >
+                  Semak beban <ChevronRight size={14} />
+                </Link>
+              </div>
+            )}
+          </section>
+        </div>
+
+        {/* Row 3: attention list + detail panel */}
+        <section>
+          <div className="flex items-center justify-between mb-3 px-1">
+            <h2 className="text-base font-semibold text-ink tracking-tight">
+              {attentionCount > 0 ? 'Staf perlu perhatian' : 'Beban staf tertinggi'}
+              <span className="ml-2 text-slate-500 font-medium text-sm">
+                ({attentionCount > 0 ? attentionCount : attentionList.length})
+              </span>
+            </h2>
+            <Link
+              to="/teachers"
+              className="text-xs font-medium text-slate-600 bg-white border border-slate-200 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors"
+            >
+              Direktori pasukan
+            </Link>
+          </div>
+
+          {attentionList.length === 0 ? (
+            <div className="bg-white border border-slate-200 rounded-xl text-center py-8 text-slate-400">
+              <UserX className="w-8 h-8 mx-auto mb-2 opacity-30" />
+              <p className="text-sm font-medium">Tiada staf direkodkan.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 xl:grid-cols-5 gap-0 bg-white border border-slate-200 rounded-xl overflow-hidden min-w-0">
+              {/* list */}
+              <div className="xl:col-span-2 flex flex-col border-b xl:border-b-0 xl:border-r border-slate-100 min-w-0">
+                {attentionList.map((member) => {
+                  const active = member.id === selectedStaff?.id;
+                  return (
+                    <button
+                      key={member.id}
+                      type="button"
+                      onClick={() => setSelectedStaffId(member.id)}
+                      className={`w-full flex items-center gap-2.5 px-4 py-3.5 text-left transition-colors border-l-2 ${
+                        active
+                          ? 'bg-slate-50 border-ink'
+                          : 'bg-white border-transparent hover:bg-slate-50'
+                      }`}
+                    >
+                      <div
+                        className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-medium shrink-0 ${
+                          active ? 'bg-ink/10 text-ink' : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        {initials(member.name)}
                       </div>
-                    ))}
-                  </div>
-                )}
+                      <div className="min-w-0 flex-1">
+                        <p
+                          className={`text-sm font-medium truncate ${
+                            active ? 'text-ink' : 'text-slate-700'
+                          }`}
+                        >
+                          {member.name}
+                        </p>
+                        <p className="text-[11px] text-slate-500 truncate mt-0.5">
+                          {member.jawatan || 'Jawatan tidak ditetapkan'}
+                        </p>
+                      </div>
+                      {member.issues.length > 0 ? (
+                        <span
+                          className={`text-[11px] font-medium px-2 py-0.5 rounded-md shrink-0 ${
+                            active ? 'bg-rose/10 text-rose' : 'bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          {member.issues.length} isu
+                        </span>
+                      ) : (
+                        <span className="text-[11px] font-medium px-2 py-0.5 rounded-md shrink-0 bg-slate-100 text-slate-500">
+                          {member.total}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
 
-              <button
-                type="button"
-                onClick={() => navigate('/teachers')}
-                className="w-full mt-4 pt-3 border-t border-slate-100 text-xs font-semibold text-slate-500 hover:text-ink flex items-center justify-center gap-1 transition-colors"
-              >
-                Lihat Direktori Penuh <ChevronRight size={14} />
-              </button>
-            </div>
-
-            {/* Right Sub-Card: Takwim & Acara Terdekat */}
-            <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col justify-between">
-              <div>
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-semibold text-ink">Takwim Terdekat</h3>
-                    <span className="w-5 h-5 rounded-full bg-ink text-white text-[10px] font-bold flex items-center justify-center">
-                      {upcomingTakwim.length}
+              {/* detail */}
+              {selectedStaff && (
+                <div className="xl:col-span-3 bg-white p-5 lg:p-6 relative flex flex-col min-w-0">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-base font-semibold text-ink truncate">
+                        {selectedStaff.name}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        {[selectedStaff.jawatan, selectedStaff.gred, selectedStaff.type]
+                          .filter(Boolean)
+                          .join(' • ') || 'Maklumat belum lengkap'}
+                      </p>
+                    </div>
+                    <span className="shrink-0 px-2.5 py-1 rounded-md bg-slate-100 text-ink text-xs font-semibold border border-slate-200">
+                      {selectedStaff.total} mata
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => openAddEventModal(selectedDateKey)}
-                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink hover:underline"
-                  >
-                    <Plus size={12} /> Tambah
-                  </button>
-                </div>
 
-                {upcomingTakwim.length === 0 ? (
-                  <div className="py-6 text-center space-y-2">
-                    <p className="text-xs text-slate-400">
-                      Tiada acara akan datang dijadualkan.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => openAddEventModal(todayKey)}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-semibold text-ink hover:bg-slate-100"
-                    >
-                      <Plus size={12} /> Cipta Peringatan Pertama
-                    </button>
+                  <div className="flex flex-wrap gap-2 mt-4">
+                    {selectedStaff.issues.length > 0 ? (
+                      selectedStaff.issues.map((issue) => (
+                        <span
+                          key={issue}
+                          className="px-2 py-1 rounded-md bg-rose/10 text-rose border border-rose/20 text-[11px] font-medium"
+                        >
+                          {issue}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="px-2 py-1 rounded-md bg-forest-soft text-forest border border-forest/20 text-[11px] font-medium">
+                        Maklumat lengkap
+                      </span>
+                    )}
                   </div>
-                ) : (
-                  <div className="space-y-2.5">
-                    {upcomingTakwim.map((ev) => (
+
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3 mt-6 border-t border-slate-100 pt-5">
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                        Jawatankuasa
+                      </p>
+                      <p className="text-sm font-medium text-ink mt-0.5">
+                        {selectedStaff.committeeCount} tugasan
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                        Kategori
+                      </p>
+                      <p className="text-sm font-medium text-ink mt-0.5 leading-snug">
+                        {selectedStaff.categories.length > 0
+                          ? selectedStaff.categories.join(', ')
+                          : '—'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-auto pt-6">
+                    <div className="flex items-center justify-between text-[11px] font-medium text-slate-500 mb-1.5">
+                      <span>Beban kerja</span>
+                      <span className="text-ink">{selectedStaff.total} / 85</span>
+                    </div>
+                    <div className="h-1.5 rounded-sm bg-slate-100 overflow-hidden">
                       <div
-                        key={ev.id}
-                        onClick={() => {
-                          setSelectedDateKey(ev.event_date);
-                          const [y, m] = ev.event_date.split('-').map(Number);
-                          if (y && m) setViewDate(new Date(y, m - 1, 1));
+                        className={`h-full rounded-sm transition-all ${loadTone(
+                          selectedStaff.total
+                        )}`}
+                        style={{
+                          width: `${Math.min(100, Math.round((selectedStaff.total / 85) * 100))}%`,
                         }}
-                        className="flex items-start gap-2.5 p-2.5 rounded-lg border border-slate-100 hover:border-slate-200 hover:bg-slate-50/70 transition-colors cursor-pointer"
-                      >
-                        <div className="w-1.5 h-1.5 rounded-full bg-forest mt-1.5 shrink-0"></div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-semibold text-ink truncate">{ev.title}</p>
-                          <p className="text-[11px] text-slate-400 mt-0.5">
-                            {formatDisplayDateMY(ev.event_date)}
-                            {ev.start_time ? ` • ${formatTimeShort(ev.start_time)}` : ''}
-                          </p>
-                        </div>
-                      </div>
-                    ))}
+                      />
+                    </div>
                   </div>
-                )}
-              </div>
-
-              <button
-                type="button"
-                onClick={() => navigate('/roster')}
-                className="w-full mt-4 pt-3 border-t border-slate-100 text-xs font-semibold text-slate-500 hover:text-ink flex items-center justify-center gap-1 transition-colors"
-              >
-                Lihat Jadual Bertugas <ChevronRight size={14} />
-              </button>
+                </div>
+              )}
             </div>
+          )}
+        </section>
+      </div>
+
+      {/* ================= RIGHT RAIL ================= */}
+      <aside className="lg:col-span-4 xl:col-span-3 min-w-0 space-y-4 lg:space-y-6">
+        <section className="bg-white border border-slate-200 rounded-xl p-4 lg:p-5">
+          <MonthCalendar
+            month={viewMonth}
+            selectedDate={selectedDate}
+            events={calendarEvents}
+            onPrev={() =>
+              setViewMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))
+            }
+            onNext={() =>
+              setViewMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))
+            }
+            onSelectDate={setSelectedDate}
+          />
+        </section>
+
+        <section className="bg-white border border-slate-200 rounded-xl p-4 lg:p-5">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h2 className="text-sm font-semibold text-ink">
+                {selectedDate.toLocaleDateString('ms-MY', { day: 'numeric', month: 'long' })}
+              </h2>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                {selectedDate.toLocaleDateString('ms-MY', { weekday: 'long' })}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={openAddModal}
+              title="Tambah acara pada tarikh ini"
+              className="w-7 h-7 rounded-md border border-slate-200 flex items-center justify-center text-ink hover:bg-slate-50 transition-colors"
+            >
+              <span className="sr-only">Tambah acara</span>
+              <Plus size={14} />
+            </button>
           </div>
-        </div>
 
-        {/* Right 4 Columns: Interactive Kalendar Sekolah */}
-        <div className="lg:col-span-4 bg-white border border-slate-200 rounded-xl p-5 lg:p-6 flex flex-col justify-between">
-          <div>
-            {/* Calendar Header */}
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="text-sm font-semibold text-ink">
-                  {MONTH_NAMES_MY[viewDate.getMonth()]} {viewDate.getFullYear()}
-                </h2>
-                <button
-                  type="button"
-                  onClick={handleJumpToday}
-                  className="text-[11px] font-medium text-slate-400 hover:text-ink transition-colors"
-                >
-                  Hari Ini &bull; {formatDisplayDateMY(todayKey)}
-                </button>
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={handlePrevMonth}
-                  aria-label="Bulan sebelumnya"
-                  className="w-7 h-7 rounded-lg border border-slate-200 flex items-center justify-center text-slate-500 hover:text-ink hover:bg-slate-50 transition-colors"
-                >
-                  <ChevronLeft size={14} />
-                </button>
-                <button
-                  type="button"
-                  onClick={handleNextMonth}
-                  aria-label="Bulan seterusnya"
-                  className="w-7 h-7 rounded-lg border border-slate-200 flex items-center justify-center text-slate-500 hover:text-ink hover:bg-slate-50 transition-colors"
-                >
-                  <ChevronRight size={14} />
-                </button>
-              </div>
-            </div>
+          {selectedDayEvents.length > 0 ? (
+            <div className="space-y-2">
+              {selectedDayEvents.map((ev) => {
+                const iconBase =
+                  ev.tone === 'coral'
+                    ? 'text-coral bg-coral/10 border-coral/10'
+                    : ev.tone === 'violet'
+                      ? 'text-violet bg-violet/10 border-violet/10'
+                      : ev.tone === 'amber'
+                        ? 'text-amber bg-amber/10 border-amber/10'
+                        : 'text-forest bg-forest/10 border-forest/10';
 
-            {/* Weekdays Row */}
-            <div className="grid grid-cols-7 gap-1 text-center mb-1.5">
-              {WEEKDAYS_SHORT_MY.map((day) => (
-                <span
-                  key={day}
-                  className="text-[10px] font-bold text-slate-400 uppercase tracking-wider py-1"
-                >
-                  {day}
-                </span>
-              ))}
-            </div>
-
-            {/* Dates Matrix */}
-            <div className="grid grid-cols-7 gap-1 text-center">
-              {calendarCells.map((cell, idx) => {
-                if (!cell.day || !cell.dateKey) {
-                  return <div key={`empty-${idx}`} className="h-9" />;
-                }
-
-                const isToday = cell.dateKey === todayKey;
-                const isSelected = cell.dateKey === selectedDateKey;
-                const dayEvents = eventsByDate[cell.dateKey] || [];
-                const hasEvents = dayEvents.length > 0;
+                const timeRange =
+                  ev.start_time && ev.end_time
+                    ? `${formatTimeShort(ev.start_time)} - ${formatTimeShort(ev.end_time)}`
+                    : ev.start_time
+                      ? formatTimeShort(ev.start_time)
+                      : 'Sepanjang hari';
 
                 return (
-                  <button
-                    key={cell.dateKey}
-                    type="button"
-                    onClick={() => setSelectedDateKey(cell.dateKey!)}
-                    title={
-                      hasEvents
-                        ? `${dayEvents.length} acara pada ${formatDisplayDateMY(cell.dateKey)}`
-                        : formatDisplayDateMY(cell.dateKey)
-                    }
-                    className={`h-9 rounded-lg flex flex-col items-center justify-center text-xs font-medium relative transition-all ${
-                      isSelected
-                        ? 'bg-ink text-white font-semibold'
-                        : isToday
-                          ? 'bg-forest/10 text-forest border border-forest/30 font-bold'
-                          : hasEvents
-                            ? 'bg-slate-50 text-ink border border-slate-200/80 font-semibold hover:bg-slate-100'
-                            : 'text-slate-600 hover:bg-slate-50'
-                    }`}
+                  <div
+                    key={ev.id}
+                    className="flex items-start gap-3 p-2.5 rounded-lg border border-slate-100 hover:border-slate-200 transition-colors group"
                   >
-                    <span>{cell.day}</span>
-                    {hasEvents && (
-                      <span
-                        className={`w-1 h-1 rounded-full mt-0.5 ${
-                          isSelected ? 'bg-white' : 'bg-forest'
-                        }`}
-                      />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Selected Date Event Summary */}
-            <div className="mt-5 pt-4 border-t border-slate-100">
-              <div className="flex items-center justify-between mb-3">
-                <div>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                    Ringkasan Tarikh Dipilih
-                  </p>
-                  <p className="text-xs font-semibold text-ink mt-0.5">
-                    {formatDisplayDateMY(selectedDateKey)}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => openAddEventModal(selectedDateKey)}
-                  className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-ink text-white rounded-lg text-[11px] font-semibold hover:opacity-90 transition-opacity"
-                >
-                  <Plus size={12} /> Acara
-                </button>
-              </div>
-
-              {isLoadingEvents ? (
-                <div className="py-4 flex justify-center">
-                  <Loader2 size={16} className="animate-spin text-slate-400" />
-                </div>
-              ) : selectedDateEvents.length === 0 ? (
-                <div className="p-3.5 rounded-lg bg-slate-50/80 border border-slate-100 text-center">
-                  <p className="text-xs text-slate-400">
-                    Tiada acara atau peringatan pada tarikh ini.
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-2 max-h-56 overflow-y-auto pr-0.5 no-scrollbar">
-                  {selectedDateEvents.map((ev) => (
                     <div
-                      key={ev.id}
-                      className="p-2.5 rounded-lg border border-slate-200/90 bg-slate-50/70 space-y-1"
+                      className={`w-9 h-9 rounded-md flex items-center justify-center shrink-0 border ${iconBase}`}
                     >
-                      <div className="flex items-start justify-between gap-2">
-                        <p className="text-xs font-semibold text-ink leading-snug">{ev.title}</p>
-                        {canModifyEvent(ev) && (
-                          <div className="flex items-center gap-1 shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => openEditEventModal(ev)}
-                              title="Sunting acara"
-                              className="p-1 text-slate-400 hover:text-ink rounded transition-colors"
-                            >
-                              <Pencil size={12} />
-                            </button>
-                            <button
-                              type="button"
-                              disabled={deletingEventId === ev.id}
-                              onClick={() => handleDeleteEvent(ev)}
-                              title="Padam acara"
-                              className="p-1 text-slate-400 hover:text-rose rounded transition-colors disabled:opacity-50"
-                            >
-                              {deletingEventId === ev.id ? (
-                                <Loader2 size={12} className="animate-spin" />
-                              ) : (
-                                <Trash2 size={12} />
-                              )}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-
-                      {(ev.start_time || ev.end_time) && (
-                        <p className="text-[11px] text-slate-500 flex items-center gap-1">
-                          <Clock size={11} className="text-slate-400" />
-                          <span>
-                            {formatTimeShort(ev.start_time)}
-                            {ev.end_time ? ` – ${formatTimeShort(ev.end_time)}` : ''}
-                          </span>
-                        </p>
+                      {ev.tone === 'coral' ? (
+                        <MapPin size={16} />
+                      ) : ev.tone === 'violet' ? (
+                        <Video size={16} />
+                      ) : (
+                        <Users size={16} />
                       )}
-
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-ink leading-snug truncate">
+                        {ev.title}
+                      </p>
+                      <div className="flex items-center gap-1 mt-0.5 text-[11px] text-slate-500">
+                        <Clock size={10} />
+                        <span>{timeRange}</span>
+                      </div>
                       {ev.description && (
-                        <p className="text-[11px] text-slate-500 leading-relaxed">
+                        <p className="text-[11px] text-slate-400 mt-1 line-clamp-2">
                           {ev.description}
                         </p>
                       )}
                     </div>
-                  ))}
-                </div>
-              )}
+
+                    {canModifyEvent(ev) && (
+                      <div className="flex items-center gap-0.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(ev)}
+                          title="Sunting acara"
+                          className="p-1 text-slate-400 hover:text-ink rounded transition-colors"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={deletingEventId === ev.id}
+                          onClick={() => handleDeleteEvent(ev)}
+                          title="Padam acara"
+                          className="p-1 text-slate-400 hover:text-rose rounded transition-colors disabled:opacity-50"
+                        >
+                          {deletingEventId === ev.id ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : (
+                            <Trash2 size={12} />
+                          )}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={openAddModal}
+              className="w-full rounded-lg border border-dashed border-slate-200 hover:border-slate-300 hover:bg-slate-50/60 py-5 text-center transition-colors"
+            >
+              <p className="text-[11px] text-slate-400">
+                Tiada program rasmi hari ini. Klik + untuk tambah.
+              </p>
+            </button>
+          )}
+        </section>
+
+        <section className="bg-white border border-slate-200 rounded-xl p-4 lg:p-5 flex items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-semibold text-ink">Warga sekolah</h2>
+            <div className="mt-2 flex items-baseline gap-2">
+              <p className="text-2xl font-semibold text-ink leading-none">{stats.staff}</p>
             </div>
           </div>
+          <Link
+            to="/teachers"
+            className="w-9 h-9 rounded-lg border border-slate-200 flex items-center justify-center text-slate-400 hover:bg-slate-50 hover:text-ink transition-colors"
+            aria-label="Pasukan"
+          >
+            <ChevronRight size={16} />
+          </Link>
+        </section>
+      </aside>
 
-          {/* Calendar Footer Legend */}
-          <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
-            <div className="flex items-center gap-3">
-              <span className="inline-flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-forest"></span> Hari Ini / Acara
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-ink"></span> Dipilih
-              </span>
-            </div>
-            <span>{events.length} acara sekolah</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Add / Edit Calendar Event Modal */}
-      {isEventModalOpen && (
+      {/* Add / Edit Event Modal */}
+      {isModalOpen && (
         <div
           className="fixed inset-0 z-50 bg-ink/40 backdrop-blur-[1px] flex items-center justify-center p-4"
-          onClick={() => !isSavingEvent && setIsEventModalOpen(false)}
+          onClick={() => !isSavingEvent && setIsModalOpen(false)}
         >
           <div
-            className="bg-white border border-slate-200 rounded-xl max-w-md w-full p-5 sm:p-6 shadow-xl space-y-4"
+            className="bg-white border border-slate-200 rounded-xl max-w-md w-full p-5 shadow-xl space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-ink text-white flex items-center justify-center">
-                  <CalendarIcon size={15} />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-ink">
-                    {editingEvent ? 'Sunting Acara Takwim' : 'Tambah Acara / Peringatan'}
-                  </h3>
-                  <p className="text-[11px] text-slate-400">
-                    Dikongsi bersama warga {school?.name || 'sekolah'}
-                  </p>
-                </div>
-              </div>
+              <h3 className="text-sm font-semibold text-ink">
+                {editingEvent ? 'Sunting Acara Takwim' : 'Tambah Acara Takwim'}
+              </h3>
               <button
                 type="button"
                 disabled={isSavingEvent}
-                onClick={() => setIsEventModalOpen(false)}
+                onClick={() => setIsModalOpen(false)}
                 className="text-slate-400 hover:text-ink"
               >
                 <X size={16} />
@@ -922,10 +1116,10 @@ export default function AdminDashboard() {
               </div>
             )}
 
-            <form onSubmit={handleSaveEvent} className="space-y-3.5">
+            <form onSubmit={handleSaveEvent} className="space-y-3">
               <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                  Tajuk Acara / Mesyuarat *
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Tajuk Acara *
                 </label>
                 <input
                   type="text"
@@ -933,14 +1127,14 @@ export default function AdminDashboard() {
                   disabled={isSavingEvent}
                   value={eventTitle}
                   onChange={(e) => setEventTitle(e.target.value)}
-                  placeholder="Contoh: Mesyuarat Agung PIBG / Taklimat Kurikulum"
-                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs text-ink outline-none focus:border-ink/40 focus:ring-4 focus:ring-ink/5"
+                  placeholder="Contoh: Mesyuarat Panitia / Mesyuarat PIBG"
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs text-ink outline-none focus:border-ink/40"
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div className="grid grid-cols-3 gap-2">
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                     Tarikh *
                   </label>
                   <input
@@ -953,7 +1147,7 @@ export default function AdminDashboard() {
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                     Masa Mula
                   </label>
                   <input
@@ -965,7 +1159,7 @@ export default function AdminDashboard() {
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                     Masa Tamat
                   </label>
                   <input
@@ -979,35 +1173,65 @@ export default function AdminDashboard() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                  Catatan / Lokasi (Pilihan)
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Label Warna
+                </label>
+                <div className="flex items-center gap-2">
+                  {(
+                    [
+                      { key: 'forest', label: 'Umum', dot: 'bg-forest' },
+                      { key: 'violet', label: 'Mesyuarat', dot: 'bg-violet' },
+                      { key: 'amber', label: 'Peringatan', dot: 'bg-amber' },
+                      { key: 'coral', label: 'Lokasi / Luar', dot: 'bg-coral' },
+                    ] as const
+                  ).map((t) => (
+                    <button
+                      key={t.key}
+                      type="button"
+                      onClick={() => setEventTone(t.key)}
+                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-colors ${
+                        eventTone === t.key
+                          ? 'border-ink bg-slate-50 text-ink'
+                          : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className={`w-2 h-2 rounded-full ${t.dot}`} />
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Catatan (Pilihan)
                 </label>
                 <textarea
-                  rows={3}
+                  rows={2}
                   disabled={isSavingEvent}
                   value={eventDescription}
                   onChange={(e) => setEventDescription(e.target.value)}
-                  placeholder="Contoh: Bilik Gerakan • Kehadiran semua ketua panitia diwajibkan."
-                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs text-ink outline-none focus:border-ink/40 focus:ring-4 focus:ring-ink/5 resize-none"
+                  placeholder="Contoh: Bilik Gerakan • Kehadiran semua guru"
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs text-ink outline-none focus:border-ink/40 resize-none"
                 />
               </div>
 
-              <div className="pt-2 flex items-center justify-end gap-2">
+              <div className="pt-2 flex justify-end gap-2">
                 <button
                   type="button"
                   disabled={isSavingEvent}
-                  onClick={() => setIsEventModalOpen(false)}
-                  className="px-3.5 py-2 border border-slate-200 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                  onClick={() => setIsModalOpen(false)}
+                  className="px-3.5 py-2 border border-slate-200 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-50"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
                   disabled={isSavingEvent}
-                  className="px-4 py-2 bg-ink text-white rounded-lg text-xs font-semibold hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-1.5"
+                  className="px-4 py-2 bg-ink text-white rounded-lg text-xs font-medium hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-1.5"
                 >
                   {isSavingEvent && <Loader2 size={13} className="animate-spin" />}
-                  {editingEvent ? 'Simpan Perubahan' : 'Simpan Acara'}
+                  {editingEvent ? 'Simpan Perubahan' : 'Simpan'}
                 </button>
               </div>
             </form>
