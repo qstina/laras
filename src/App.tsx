@@ -20,14 +20,33 @@ import WorkloadAnalytics from './pages/WorkloadAnalytics';
 
 const TIMEOUT_MS = 30 * 60 * 1000;
 
-const ProtectedRoute = ({ session, children }: { session: any; children: React.ReactNode }) => {
+function hasRecoveryParamsInUrl(): boolean {
+  if (typeof window === 'undefined') return false;
+  const hash = window.location.hash.toLowerCase();
+  const search = window.location.search.toLowerCase();
+  return (
+    hash.includes('type=recovery') ||
+    search.includes('type=recovery') ||
+    window.location.pathname === '/update-password'
+  );
+}
+
+const ProtectedRoute = ({
+  session,
+  isPasswordRecovery,
+  children,
+}: {
+  session: any;
+  isPasswordRecovery: boolean;
+  children: React.ReactNode;
+}) => {
   const [isRegistrationComplete, setIsRegistrationComplete] = useState<boolean | null>(null);
 
   useEffect(() => {
     let active = true;
 
     async function verifyRegistration() {
-      if (!session?.user) {
+      if (!session?.user || isPasswordRecovery) {
         if (active) setIsRegistrationComplete(false);
         return;
       }
@@ -43,8 +62,17 @@ const ProtectedRoute = ({ session, children }: { session: any; children: React.R
     }
 
     verifyRegistration();
-    return () => { active = false; };
-  }, [session?.user?.id]);
+    return () => {
+      active = false;
+    };
+  }, [session?.user?.id, isPasswordRecovery]);
+
+  // If user arrives via password recovery link (including from Supabase Dashboard -> /),
+  // forward to /login while keeping #access_token / ?code / ?type=recovery intact
+  if (isPasswordRecovery || hasRecoveryParamsInUrl()) {
+    const preservedTarget = `/login${window.location.search}${window.location.hash}`;
+    return <Navigate to={preservedTarget} replace />;
+  }
 
   if (!session) {
     return <Navigate to="/login" replace />;
@@ -70,6 +98,9 @@ export default function App() {
   const [session, setSession] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [timeoutMessage, setTimeoutMessage] = useState<string | null>(null);
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState<boolean>(() =>
+    hasRecoveryParamsInUrl()
+  );
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -77,19 +108,29 @@ export default function App() {
       setIsLoading(false);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session);
-      if (session) setTimeoutMessage(null);
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsPasswordRecovery(true);
+        setTimeoutMessage(null);
+      } else if (event === 'SIGNED_OUT') {
+        setIsPasswordRecovery(false);
+      } else if (session) {
+        setTimeoutMessage(null);
+      }
     });
 
     return () => subscription.unsubscribe();
   }, []);
 
   useEffect(() => {
-    if (!session) return;
+    if (!session || isPasswordRecovery) return;
 
     // The client-side idle check remains for UX, but JWT expiration must be set in Supabase settings
-    const updateActivity = () => localStorage.setItem('laras_last_activity', Date.now().toString());
+    const updateActivity = () =>
+      localStorage.setItem('laras_last_activity', Date.now().toString());
 
     const checkInactivity = async () => {
       const lastActivityStr = localStorage.getItem('laras_last_activity');
@@ -113,15 +154,15 @@ export default function App() {
     };
 
     const events = ['mousemove', 'keydown', 'click', 'scroll'];
-    events.forEach(event => window.addEventListener(event, handleActivity));
+    events.forEach((event) => window.addEventListener(event, handleActivity));
     const intervalId = setInterval(checkInactivity, 10000);
 
     return () => {
-      events.forEach(event => window.removeEventListener(event, handleActivity));
+      events.forEach((event) => window.removeEventListener(event, handleActivity));
       clearInterval(intervalId);
       if (throttleTimer) clearTimeout(throttleTimer);
     };
-  }, [session]);
+  }, [session, isPasswordRecovery]);
 
   if (isLoading) {
     return (
@@ -135,17 +176,35 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route 
-          path="/login" 
-          element={<Auth message={timeoutMessage} session={session} />} 
-        />
-        <Route path="/accept-invitation" element={<AcceptInvitation />}/>
-        
-        {/* APPLIED: Protected Routes */}
-        <Route 
-          path="/" 
+        <Route
+          path="/login"
           element={
-            <ProtectedRoute session={session}>
+            <Auth
+              message={timeoutMessage}
+              session={session}
+              isRecovery={isPasswordRecovery}
+              onRecoveryComplete={() => setIsPasswordRecovery(false)}
+            />
+          }
+        />
+        <Route
+          path="/update-password"
+          element={
+            <Auth
+              message={timeoutMessage}
+              session={session}
+              isRecovery={isPasswordRecovery}
+              onRecoveryComplete={() => setIsPasswordRecovery(false)}
+            />
+          }
+        />
+        <Route path="/accept-invitation" element={<AcceptInvitation />} />
+
+        {/* Protected Routes */}
+        <Route
+          path="/"
+          element={
+            <ProtectedRoute session={session} isPasswordRecovery={isPasswordRecovery}>
               <LarasLayout />
             </ProtectedRoute>
           }

@@ -37,6 +37,8 @@ import {
 interface AuthProps {
   message?: string | null;
   session?: any;
+  isRecovery?: boolean;
+  onRecoveryComplete?: () => void;
 }
 
 type AuthMode =
@@ -196,7 +198,12 @@ function mapAuthErrorMessage(
   return 'Berlaku ralat semasa memproses permintaan anda. Sila cuba semula.';
 }
 
-export default function Auth({ message, session }: AuthProps) {
+export default function Auth({
+  message,
+  session,
+  isRecovery = false,
+  onRecoveryComplete,
+}: AuthProps) {
   const navigate = useNavigate();
 
   // Synchronously capture URL callback parameters on initial load before cleaning URL
@@ -229,10 +236,14 @@ export default function Auth({ message, session }: AuthProps) {
     initialCallbackRef.current?.type === 'signup' ||
       initialCallbackRef.current?.type === 'email'
   );
+  const isRecoveryFlowRef = useRef(
+    isRecovery ||
+      initialCallbackRef.current?.type === 'recovery' ||
+      initialCallbackRef.current?.pathname === '/update-password'
+  );
 
   const [authMode, setAuthMode] = useState<AuthMode>(() => {
-    const cb = initialCallbackRef.current;
-    if (cb?.type === 'recovery' || cb?.pathname === '/update-password') {
+    if (isRecoveryFlowRef.current) {
       return 'update-password';
     }
     return 'login';
@@ -241,6 +252,9 @@ export default function Auth({ message, session }: AuthProps) {
   const [onboardingType, setOnboardingType] = useState<OnboardingType>('join');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isCheckingProfile, setIsCheckingProfile] = useState(false);
+  const [isVerifyingRecovery, setIsVerifyingRecovery] = useState<boolean>(
+    () => isRecoveryFlowRef.current
+  );
   const [error, setError] = useState<string | null>(message || null);
   const [success, setSuccess] = useState<string | null>(null);
   const [infoNotice, setInfoNotice] = useState<string | null>(null);
@@ -365,74 +379,46 @@ export default function Auth({ message, session }: AuthProps) {
     }
   }, [session]);
 
+  // Sync external PASSWORD_RECOVERY event detected by App.tsx
+  useEffect(() => {
+    if (isRecovery) {
+      isRecoveryFlowRef.current = true;
+      setIsVerifyingRecovery(false);
+      setError(null);
+      setSuccess(null);
+      setAuthMode('update-password');
+    }
+  }, [isRecovery]);
+
   // Handle URL callback errors, token_hash verification, and PASSWORD_RECOVERY listener
   useEffect(() => {
+    let mounted = true;
     const cb = initialCallbackRef.current;
 
-    if (!processedCallbackRef.current && cb) {
-      processedCallbackRef.current = true;
-
+    const cleanUrlParams = () => {
       if (window.location.hash || window.location.search) {
-        window.history.replaceState({}, document.title, window.location.pathname);
+        window.history.replaceState({}, document.title, '/login');
       }
-
-      if (cb.error || cb.errorCode) {
-        const isExpired =
-          cb.errorCode === 'otp_expired' ||
-          cb.error === 'access_denied' ||
-          (cb.errorDescription || '').toLowerCase().includes('expired');
-
-        if (isExpired) {
-          setVerificationExpiredState(true);
-          setError(
-            'Pautan pengesahan telah tamat tempoh atau sudah digunakan. Jika anda belum mengesahkan akaun, sila minta pautan baharu di bawah.'
-          );
-        } else {
-          setError(
-            mapAuthErrorMessage(
-              { code: cb.errorCode, message: cb.errorDescription || cb.error },
-              authMode
-            )
-          );
-        }
-      } else if (cb.tokenHash && (cb.type === 'signup' || cb.type === 'email')) {
-        supabase.auth
-          .verifyOtp({
-            token_hash: cb.tokenHash,
-            type: cb.type === 'email' ? 'email' : 'signup',
-          })
-          .then(({ data, error: verifyErr }) => {
-            if (verifyErr) {
-              setVerificationExpiredState(true);
-              setError(mapAuthErrorMessage(verifyErr, 'verify-email'));
-              return;
-            }
-            if (data.user) {
-              try {
-                localStorage.removeItem(STORAGE_KEYS.PENDING_EMAIL);
-                sessionStorage.setItem(STORAGE_KEYS.VERIFIED_TOAST, '1');
-              } catch {
-                // ignore
-              }
-              setConfirmedUserEmail(data.user.email || '');
-              setAuthMode('email-confirmed');
-            }
-          });
-      }
-    }
+    };
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, currentSession) => {
+      if (!mounted) return;
+
       if (event === 'PASSWORD_RECOVERY') {
+        isRecoveryFlowRef.current = true;
+        setIsVerifyingRecovery(false);
         setError(null);
         setSuccess(null);
         setPassword('');
         setConfirmPassword('');
         setAuthMode('update-password');
+        cleanUrlParams();
       } else if (
         event === 'SIGNED_IN' &&
         isSignupConfirmationFlowRef.current &&
+        !isRecoveryFlowRef.current &&
         currentSession?.user
       ) {
         try {
@@ -443,20 +429,136 @@ export default function Auth({ message, session }: AuthProps) {
         }
         setConfirmedUserEmail(currentSession.user.email || '');
         setAuthMode('email-confirmed');
+        cleanUrlParams();
       }
     });
 
+    async function initCallback() {
+      if (processedCallbackRef.current || !cb) return;
+      processedCallbackRef.current = true;
+
+      if (cb.error || cb.errorCode) {
+        cleanUrlParams();
+        setIsVerifyingRecovery(false);
+        const isExpired =
+          cb.errorCode === 'otp_expired' ||
+          cb.error === 'access_denied' ||
+          (cb.errorDescription || '').toLowerCase().includes('expired');
+
+        if (isExpired) {
+          if (isRecoveryFlowRef.current) {
+            isRecoveryFlowRef.current = false;
+            onRecoveryComplete?.();
+            setAuthMode('reset');
+            setError(
+              'Pautan tetapan semula kata laluan telah tamat tempoh atau sudah digunakan. Sila minta pautan baharu di bawah.'
+            );
+          } else {
+            setVerificationExpiredState(true);
+            setError(
+              'Pautan pengesahan telah tamat tempoh atau sudah digunakan. Jika anda belum mengesahkan akaun, sila minta pautan baharu di bawah.'
+            );
+          }
+        } else {
+          setError(
+            mapAuthErrorMessage(
+              { code: cb.errorCode, message: cb.errorDescription || cb.error },
+              isRecoveryFlowRef.current ? 'update-password' : 'login'
+            )
+          );
+        }
+        return;
+      }
+
+      if (cb.tokenHash && cb.type === 'recovery') {
+        isRecoveryFlowRef.current = true;
+        setAuthMode('update-password');
+        const { error: verifyErr } = await supabase.auth.verifyOtp({
+          token_hash: cb.tokenHash,
+          type: 'recovery',
+        });
+        cleanUrlParams();
+        if (!mounted) return;
+        setIsVerifyingRecovery(false);
+
+        if (verifyErr) {
+          isRecoveryFlowRef.current = false;
+          onRecoveryComplete?.();
+          setAuthMode('reset');
+          setError(
+            'Pautan tetapan semula kata laluan tidak sah atau telah tamat tempoh. Sila minta pautan baharu.'
+          );
+        }
+        return;
+      }
+
+      if (cb.tokenHash && (cb.type === 'signup' || cb.type === 'email')) {
+        const { data, error: verifyErr } = await supabase.auth.verifyOtp({
+          token_hash: cb.tokenHash,
+          type: cb.type === 'email' ? 'email' : 'signup',
+        });
+        cleanUrlParams();
+        if (!mounted) return;
+
+        if (verifyErr) {
+          setVerificationExpiredState(true);
+          setError(mapAuthErrorMessage(verifyErr, 'verify-email'));
+          return;
+        }
+        if (data.user) {
+          try {
+            localStorage.removeItem(STORAGE_KEYS.PENDING_EMAIL);
+            sessionStorage.setItem(STORAGE_KEYS.VERIFIED_TOAST, '1');
+          } catch {
+            // ignore
+          }
+          setConfirmedUserEmail(data.user.email || '');
+          setAuthMode('email-confirmed');
+        }
+        return;
+      }
+
+      // Let Supabase finish exchanging #access_token or ?code before cleaning the URL
+      const {
+        data: { session: activeSession },
+      } = await supabase.auth.getSession();
+
+      if (!mounted) return;
+      cleanUrlParams();
+
+      if (isRecoveryFlowRef.current) {
+        setIsVerifyingRecovery(false);
+        if (!activeSession?.user) {
+          isRecoveryFlowRef.current = false;
+          onRecoveryComplete?.();
+          setAuthMode('reset');
+          setError(
+            'Sesi pemulihan kata laluan tidak ditemui atau pautan telah tamat tempoh. Sila masukkan e-mel anda untuk pautan baharu.'
+          );
+        }
+      }
+    }
+
+    initCallback();
+
     return () => {
+      mounted = false;
       subscription.unsubscribe();
     };
-  }, [authMode]);
+  }, [onRecoveryComplete]);
 
   // Check authenticated user's profile & school linkage
   useEffect(() => {
     let mounted = true;
 
     async function checkRegistrationStatus() {
-      if (!session?.user || isProcessing || authMode === 'update-password') {
+      if (
+        !session?.user ||
+        isProcessing ||
+        isRecovery ||
+        isRecoveryFlowRef.current ||
+        authMode === 'update-password'
+      ) {
         return;
       }
 
@@ -518,7 +620,7 @@ export default function Auth({ message, session }: AuthProps) {
     return () => {
       mounted = false;
     };
-  }, [session, isProcessing, authMode, navigate]);
+  }, [session, isProcessing, isRecovery, authMode, navigate]);
 
   // Auto-redirect smoothly after showing email verification success state
   useEffect(() => {
@@ -813,23 +915,42 @@ export default function Auth({ message, session }: AuthProps) {
           `Pautan tetapan semula kata laluan telah dihantar ke ${cleanEmail}. Sila semak peti masuk atau folder spam anda.`
         );
       } else if (authMode === 'update-password') {
+        const {
+          data: { session: recoverySession },
+        } = await supabase.auth.getSession();
+
+        if (!recoverySession?.user) {
+          isRecoveryFlowRef.current = false;
+          onRecoveryComplete?.();
+          setAuthMode('reset');
+          throw {
+            code: '28000',
+            message: 'Sesi pemulihan kata laluan telah tamat. Sila minta pautan baharu.',
+          };
+        }
+
         const { error: updateError } = await supabase.auth.updateUser({
           password,
         });
         if (updateError) throw updateError;
 
+        try {
+          localStorage.setItem(STORAGE_KEYS.REMEMBER_ME, 'true');
+          sessionStorage.setItem(STORAGE_KEYS.SESSION_ALIVE, '1');
+        } catch {
+          // ignore
+        }
+
+        isRecoveryFlowRef.current = false;
+        onRecoveryComplete?.();
         setPassword('');
         setConfirmPassword('');
         setPasswordTouched(false);
-        setSuccess('Kata laluan baharu anda berjaya disimpan!');
+        setSuccess('Kata laluan baharu anda berjaya disimpan! Mengalihkan...');
 
         window.setTimeout(() => {
-          if (session?.user) {
-            navigate('/', { replace: true });
-          } else {
-            setAuthMode('login');
-          }
-        }, 1400);
+          navigate('/', { replace: true });
+        }, 1200);
       }
     } catch (err: any) {
       console.error(
@@ -907,6 +1028,18 @@ export default function Auth({ message, session }: AuthProps) {
     setConfirmPassword('');
     setPasswordTouched(false);
   };
+
+  if (isVerifyingRecovery) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-white">
+        <div className="flex flex-col items-center gap-3 text-ink">
+          <Loader2 size={28} className="animate-spin" />
+          <p className="text-sm font-semibold">Mengesahkan pautan pemulihan kata laluan...</p>
+          <p className="text-xs text-slate-400">Sila tunggu sebentar</p>
+        </div>
+      </div>
+    );
+  }
 
   if (isCheckingProfile) {
     return (
