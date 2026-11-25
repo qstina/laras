@@ -83,8 +83,10 @@ export default function NotificationsPopover({
   }, [userId, schoolId]);
 
   useEffect(() => {
-    loadNotifications();
-  }, [loadNotifications]);
+    if (isOpen) {
+      loadNotifications();
+    }
+  }, [isOpen, loadNotifications]);
 
   // Realtime subscription for incoming notifications targeted to this user
   useEffect(() => {
