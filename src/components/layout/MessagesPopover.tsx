@@ -16,7 +16,6 @@ interface SchoolMember {
   id: string;
   full_name: string;
   role: string;
-  position?: string | null;
   email?: string | null;
   isPendingInvite?: boolean;
 }
@@ -99,7 +98,7 @@ export default function MessagesPopover({
       const [membersRes, invitesRes, convsRes, unreadRes] = await Promise.all([
         supabase
           .from('profiles')
-          .select('id, full_name, role, position, email')
+          .select('id, full_name, role, email')
           .eq('school_id', schoolId)
           .neq('id', userId)
           .order('full_name', { ascending: true }),
@@ -157,7 +156,6 @@ export default function MessagesPopover({
     loadSchoolMembersAndConversations();
   }, [loadSchoolMembersAndConversations]);
 
-  // Reload list whenever user opens the popover so newly accepted invites appear immediately
   useEffect(() => {
     if (isOpen) {
       loadSchoolMembersAndConversations();
@@ -451,7 +449,7 @@ export default function MessagesPopover({
                         <p className="text-[11px] text-slate-400 truncate">
                           {m.role === 'admin'
                             ? 'Pentadbir Sekolah'
-                            : m.position || 'Guru Dijemput (Aktif)'}
+                            : m.email || 'Guru Dijemput (Aktif)'}
                         </p>
                       </div>
                     </button>
