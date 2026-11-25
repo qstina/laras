@@ -1,202 +1,226 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   FileText,
   Download,
-  Eye,
-  Clock,
-  CheckCircle2,
-  Loader2,
-  Search,
+  History,
+  FileSpreadsheet,
+  Edit3,
   BookOpen,
+  Loader2,
+  Layers,
   UserCheck,
   Trash2,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+import { exportEditorHtmlToDocx } from '../utils/exportBookDocx';
 
-interface GenerationRecord {
-  id: string;
-  school_id?: string | null;
-  user_id?: string | null;
-  title: string;
-  file_type: string;
-  file_size: string;
-  status: string;
-  snapshot_json?: any;
-  created_at: string;
-  creator_name?: string;
+const bookTemplates = [
+  {
+    id: 'buku-pengurusan-lengkap',
+    title: 'Buku Pengurusan Sekolah (Lengkap)',
+    description:
+      'Jana dan sunting draf lengkap Buku Pengurusan (Profil Sekolah, Carta Organisasi, Direktori Warga, Jawatankuasa & Takwim) dalam Editor Laras.',
+    icon: BookOpen,
+    color: 'text-forest',
+    bg: 'bg-forest/10',
+    border: 'border-forest/20',
+    options: ['Sesi 2026/2027', 'Sesi 2025/2026'],
+    path: '/book-builder',
+    actionText: 'Buka Editor Laras',
+  },
+  {
+    id: 'lampiran-jawatankuasa',
+    title: 'Lampiran Senarai Jawatankuasa & Bidang Tugas',
+    description:
+      'Susun atur khas bahagian Jawatankuasa Pentadbiran, Kurikulum, HEM dan Kokurikulum sedia untuk cetakan DOCX/PDF.',
+    icon: Layers,
+    color: 'text-sky',
+    bg: 'bg-sky/10',
+    border: 'border-sky/20',
+    options: ['Semua Kategori', 'Kurikulum & HEM Sahaja'],
+    path: '/book-builder',
+    actionText: 'Sunting dalam Book Builder',
+  },
+];
+
+function mergeHistoryWithSnapshots(rows: any[], prof: any): any[] {
+  const snapshotsObj = (prof?.cover_config as any)?._generation_snapshots || {};
+  const uniqueSnapshots = new Map<string, any>();
+
+  Object.values(snapshotsObj).forEach((item: any) => {
+    if (item && typeof item === 'object' && item.id && item.name) {
+      uniqueSnapshots.set(item.id, item);
+    }
+  });
+
+  const combined = [...rows];
+  uniqueSnapshots.forEach((snap) => {
+    const exists = combined.some((r) => r.id === snap.id || r.name === snap.name);
+    if (!exists) {
+      combined.push({
+        id: snap.id,
+        name: snap.name,
+        type: snap.type || 'docx',
+        size: snap.size || '-',
+        created_at: snap.created_at || new Date().toISOString(),
+        user_id: snap.generated_by_id || snap.user_id || null,
+        metadata: snap,
+      });
+    }
+  });
+
+  return combined.sort(
+    (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+  );
 }
 
 export default function Reports() {
   const navigate = useNavigate();
-
-  useEffect(() => {
-    document.title = 'Sejarah Janaan Buku | LARAS';
-  }, []);
-
-  const [history, setHistory] = useState<GenerationRecord[]>([]);
+  const [schoolId, setSchoolId] = useState<string>('');
+  const [currentUserId, setCurrentUserId] = useState<string>('');
+  const [currentUserRole, setCurrentUserRole] = useState<string>('');
+  const [creatorMap, setCreatorMap] = useState<Record<string, string>>({});
+  const [recentExports, setRecentExports] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterType, setFilterType] = useState<'ALL' | 'DOCX' | 'PDF'>('ALL');
+  const [schoolProfile, setSchoolProfile] = useState<any>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null);
-  const [schoolId, setSchoolId] = useState<string | null>(null);
-  const [creatorMap, setCreatorMap] = useState<Record<string, string>>({});
-
-  const resolveCreatorNames = useCallback(
-    async (
-      records: GenerationRecord[],
-      activeSchoolId: string,
-      existingMap: Record<string, string>
-    ) => {
-      const mergedMap = { ...existingMap };
-      const missingUserIds = Array.from(
-        new Set(
-          records
-            .map((r) => r.user_id)
-            .filter((uid): uid is string => Boolean(uid) && !mergedMap[uid!])
-        )
-      );
-
-      if (missingUserIds.length > 0) {
-        const { data: profilesData } = await supabase
-          .from('profiles')
-          .select('id, full_name')
-          .eq('school_id', activeSchoolId)
-          .in('id', missingUserIds);
-
-        if (profilesData) {
-          for (const p of profilesData) {
-            if (p.id && p.full_name) {
-              mergedMap[p.id] = p.full_name;
-            }
-          }
-          setCreatorMap(mergedMap);
-        }
-      }
-
-      return records.map((rec) => ({
-        ...rec,
-        creator_name:
-          (rec.user_id && mergedMap[rec.user_id]) ||
-          rec.snapshot_json?.generatedByName ||
-          'Warga Sekolah',
-      }));
-    },
-    []
+  const [selectedOptions, setSelectedOptions] = useState<Record<string, string>>(() =>
+    Object.fromEntries(bookTemplates.map((t) => [t.id, t.options[0]]))
   );
 
-  const fetchHistory = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+  const loadHistoryRows = useCallback(async (sid: string) => {
+    const { data, error } = await supabase
+      .from('document_history')
+      .select('*')
+      .eq('school_id', sid)
+      .order('created_at', { ascending: false })
+      .limit(50);
 
-      if (!session?.user) {
-        setHistory([]);
-        setIsLoading(false);
-        return;
-      }
+    if (!error && data) {
+      return data;
+    }
+    return [];
+  }, []);
 
-      setCurrentUserId(session.user.id);
+  const loadSchoolCreators = useCallback(async (sid: string) => {
+    const { data: members } = await supabase
+      .from('profiles')
+      .select('id, full_name')
+      .eq('school_id', sid);
 
-      const { data: userProfile } = await supabase
-        .from('profiles')
-        .select('id, school_id, role, full_name')
-        .eq('id', session.user.id)
-        .single();
-
-      if (!userProfile?.school_id) {
-        setHistory([]);
-        setIsLoading(false);
-        return;
-      }
-
-      const activeSchoolId = userProfile.school_id;
-      setSchoolId(activeSchoolId);
-      setCurrentUserRole(userProfile.role || null);
-
-      const { data: schoolMembers } = await supabase
-        .from('profiles')
-        .select('id, full_name')
-        .eq('school_id', activeSchoolId);
-
-      const initialMap: Record<string, string> = {};
-      if (schoolMembers) {
-        for (const m of schoolMembers) {
-          if (m.id && m.full_name) {
-            initialMap[m.id] = m.full_name;
-          }
+    const map: Record<string, string> = {};
+    if (members) {
+      for (const m of members) {
+        if (m.id && m.full_name) {
+          map[m.id] = m.full_name;
         }
       }
-      if (userProfile.id && userProfile.full_name) {
-        initialMap[userProfile.id] = userProfile.full_name;
-      }
-      setCreatorMap(initialMap);
-
-      const { data, error } = await supabase
-        .from('book_generations')
-        .select('*')
-        .eq('school_id', activeSchoolId)
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        console.error('[LARAS Sejarah Janaan] Query error:', error);
-        setHistory([]);
-      } else if (data) {
-        const enriched = await resolveCreatorNames(
-          data as GenerationRecord[],
-          activeSchoolId,
-          initialMap
-        );
-        setHistory(enriched);
-      }
-    } catch (err) {
-      console.error('[LARAS Sejarah Janaan] Unexpected error:', err);
-    } finally {
-      setIsLoading(false);
     }
-  }, [resolveCreatorNames]);
+    return map;
+  }, []);
 
   useEffect(() => {
-    fetchHistory();
-  }, [fetchHistory]);
+    let active = true;
 
+    async function fetchExportHistory() {
+      setIsLoading(true);
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+
+        if (!session) {
+          if (active) setIsLoading(false);
+          return;
+        }
+
+        if (active) setCurrentUserId(session.user.id);
+
+        const { data: userProfile } = await supabase
+          .from('profiles')
+          .select('id, school_id, role, full_name')
+          .eq('id', session.user.id)
+          .maybeSingle();
+
+        const sid = userProfile?.school_id;
+        if (!sid) {
+          if (active) setIsLoading(false);
+          return;
+        }
+
+        if (active) {
+          setSchoolId(sid);
+          setCurrentUserRole(userProfile?.role || '');
+        }
+
+        const [historyRows, { data: prof }, membersMap] = await Promise.all([
+          loadHistoryRows(sid),
+          supabase.from('school_profile').select('*').eq('school_id', sid).limit(1).maybeSingle(),
+          loadSchoolCreators(sid),
+        ]);
+
+        if (userProfile?.id && userProfile?.full_name) {
+          membersMap[userProfile.id] = userProfile.full_name;
+        }
+
+        if (!active) return;
+
+        setCreatorMap(membersMap);
+        setRecentExports(mergeHistoryWithSnapshots(historyRows, prof));
+        if (prof) {
+          setSchoolProfile(prof);
+          if (prof.current_session) {
+            const sessionOption = `Sesi ${prof.current_session}`;
+            setSelectedOptions((prev) => ({
+              ...prev,
+              'buku-pengurusan-lengkap': bookTemplates[0].options.includes(sessionOption)
+                ? sessionOption
+                : prev['buku-pengurusan-lengkap'],
+            }));
+          }
+        }
+      } finally {
+        if (active) setIsLoading(false);
+      }
+    }
+
+    fetchExportHistory();
+
+    return () => {
+      active = false;
+    };
+  }, [loadHistoryRows, loadSchoolCreators]);
+
+  // Live refresh across all users in the same school
   useEffect(() => {
     if (!schoolId) return;
 
     const channel = supabase
-      .channel(`school-book-generations-${schoolId}`)
+      .channel(`reports-history-${schoolId}`)
       .on(
         'postgres_changes',
         {
           event: '*',
           schema: 'public',
-          table: 'book_generations',
+          table: 'document_history',
           filter: `school_id=eq.${schoolId}`,
         },
-        async (payload) => {
-          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-            const incoming = payload.new as GenerationRecord;
-            const [enriched] = await resolveCreatorNames([incoming], schoolId, creatorMap);
-
-            setHistory((prev) => {
-              const exists = prev.some((item) => item.id === enriched.id);
-              if (exists) {
-                return prev.map((item) => (item.id === enriched.id ? enriched : item));
-              }
-              return [enriched, ...prev];
-            });
-          } else if (payload.eventType === 'DELETE') {
-            const removedId = (payload.old as { id?: string })?.id;
-            if (removedId) {
-              setHistory((prev) => prev.filter((item) => item.id !== removedId));
-            }
-          }
+        async () => {
+          const [rows, { data: prof }, membersMap] = await Promise.all([
+            loadHistoryRows(schoolId),
+            supabase
+              .from('school_profile')
+              .select('*')
+              .eq('school_id', schoolId)
+              .limit(1)
+              .maybeSingle(),
+            loadSchoolCreators(schoolId),
+          ]);
+          setCreatorMap((prev) => ({ ...prev, ...membersMap }));
+          if (prof) setSchoolProfile(prof);
+          setRecentExports(mergeHistoryWithSnapshots(rows, prof));
         }
       )
       .subscribe();
@@ -204,249 +228,287 @@ export default function Reports() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [schoolId, creatorMap, resolveCreatorNames]);
+  }, [schoolId, loadHistoryRows, loadSchoolCreators]);
 
-  const handleLoadAndPreview = (item: GenerationRecord) => {
-    if (item.snapshot_json) {
-      sessionStorage.setItem('laras_restore_snapshot', JSON.stringify(item.snapshot_json));
-    }
-    navigate('/book-builder?preview=1');
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('ms-MY', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
   };
 
-  const handleDownloadAgain = (item: GenerationRecord) => {
-    setDownloadingId(item.id);
-    if (item.snapshot_json) {
-      sessionStorage.setItem('laras_restore_snapshot', JSON.stringify(item.snapshot_json));
-    }
-    setTimeout(() => {
-      setDownloadingId(null);
-      navigate(`/book-builder?download=${item.file_type.toLowerCase()}`);
-    }, 300);
+  const getSnapshotForHistory = (file: any) => {
+    const profileSnapshots = (schoolProfile?.cover_config as any)?._generation_snapshots || {};
+    return file?.metadata || profileSnapshots[file.id] || profileSnapshots[file.name] || {};
   };
 
-  const handleDeleteRecord = async (item: GenerationRecord) => {
+  const resolveCreatorName = (file: any, meta: any) => {
+    if (file?.user_id && creatorMap[file.user_id]) {
+      return creatorMap[file.user_id];
+    }
+    if (meta?.generated_by_id && creatorMap[meta.generated_by_id]) {
+      return creatorMap[meta.generated_by_id];
+    }
+    if (meta?.generated_by) {
+      return meta.generated_by;
+    }
+    return 'Warga Sekolah';
+  };
+
+  const handleOpenHistoryVersion = (file: any) => {
+    navigate(`/book-builder?historyId=${encodeURIComponent(file.id)}`);
+  };
+
+  const handleDownloadHistoryVersion = async (e: React.MouseEvent, file: any) => {
+    e.stopPropagation();
+    const meta = getSnapshotForHistory(file);
+    const snapshotHtml = meta?.html_snapshot || file?.content || schoolProfile?.book_draft;
+    const snapshotCover = meta?.cover_config || schoolProfile?.cover_config;
+
+    if (file.type === 'docx' && snapshotHtml) {
+      setDownloadingId(file.id);
+      try {
+        await exportEditorHtmlToDocx(snapshotHtml, {
+          ...(schoolProfile || {}),
+          ...(meta?.session ? { current_session: meta.session } : {}),
+          cover_config: snapshotCover,
+        });
+      } finally {
+        setDownloadingId(null);
+      }
+      return;
+    }
+
+    navigate(
+      `/book-builder?historyId=${encodeURIComponent(file.id)}${
+        file.type === 'pdf' ? '&autoPrint=1' : ''
+      }`
+    );
+  };
+
+  const handleDeleteHistoryVersion = async (e: React.MouseEvent, file: any) => {
+    e.stopPropagation();
     if (!schoolId || deletingId) return;
-    setDeletingId(item.id);
+    setDeletingId(file.id);
     try {
       const { error } = await supabase
-        .from('book_generations')
+        .from('document_history')
         .delete()
-        .eq('id', item.id)
+        .eq('id', file.id)
         .eq('school_id', schoolId);
 
       if (!error) {
-        setHistory((prev) => prev.filter((rec) => rec.id !== item.id));
+        setRecentExports((prev) => prev.filter((item) => item.id !== file.id));
       }
-    } catch (err) {
-      console.error('[LARAS Sejarah Janaan] Delete error:', err);
     } finally {
       setDeletingId(null);
     }
   };
 
-  const filteredHistory = history.filter((item) => {
-    const q = searchQuery.toLowerCase();
-    const matchesSearch =
-      item.title.toLowerCase().includes(q) ||
-      (item.creator_name || '').toLowerCase().includes(q);
-    const matchesType = filterType === 'ALL' || item.file_type?.toUpperCase() === filterType;
-    return matchesSearch && matchesType;
-  });
-
-  const formatDate = (dateStr: string) => {
-    const d = new Date(dateStr);
-    return (
-      d.toLocaleDateString('ms-MY', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric',
-      }) +
-      ' • ' +
-      d.toLocaleTimeString('ms-MY', { hour: '2-digit', minute: '2-digit' })
-    );
-  };
-
   return (
-    <div className="max-w-384 mx-auto pb-8 font-sans">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-6">
+    <div className="max-w-384 mx-auto space-y-4 lg:space-y-6 relative">
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 px-1">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-semibold text-ink tracking-tight">
-            Sejarah Janaan Buku
-          </h1>
+          <h2 className="text-2xl sm:text-3xl font-semibold text-ink tracking-tight">
+            Janaan Buku Pengurusan
+          </h2>
           <p className="text-sm text-slate-500 mt-1">
-            Arkib dan rekod buku pengurusan sekolah yang pernah dijana dalam format DOCX dan PDF
-            oleh warga sekolah.
+            Susun kandungan, sunting susun atur rasmi dan eksport Buku Pengurusan Sekolah ke format DOCX atau PDF.
           </p>
         </div>
 
-        <button
-          onClick={() => navigate('/book-builder')}
-          className="bg-ink hover:opacity-90 text-white px-4 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all self-start md:self-auto"
+        <Link
+          to="/book-builder"
+          className="bg-ink hover:opacity-90 text-white rounded-lg font-medium h-9 px-4 text-xs flex items-center gap-1.5 transition-all shrink-0"
         >
-          <BookOpen size={14} /> Jana Buku Baharu
-        </button>
+          <Edit3 size={14} />
+          Buka Book Builder
+        </Link>
       </div>
 
-      {/* Filters & Search Bar */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3.5 mb-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="relative flex-1 max-w-md">
-          <Search
-            size={15}
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-          />
-          <input
-            type="text"
-            placeholder="Cari tajuk buku atau nama penjanaan guru..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-ink outline-none focus:border-ink/40 focus:bg-white transition-all"
-          />
-        </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
+        <div className="lg:col-span-2 space-y-3">
+          <h3 className="text-sm font-semibold text-ink px-1">Templat Penerbitan Buku</h3>
 
-        <div className="flex items-center gap-1.5">
-          {(['ALL', 'DOCX', 'PDF'] as const).map((type) => (
-            <button
-              key={type}
-              onClick={() => setFilterType(type)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                filterType === type
-                  ? 'bg-ink text-white'
-                  : 'bg-slate-50 text-slate-600 hover:bg-slate-100 border border-slate-200/80'
-              }`}
-            >
-              {type === 'ALL' ? 'Semua' : type}
-            </button>
-          ))}
-        </div>
-      </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {bookTemplates.map((tpl) => {
+              const Icon = tpl.icon;
+              const chosenOption = selectedOptions[tpl.id] || tpl.options[0];
+              const targetUrl = `${tpl.path}?template=${encodeURIComponent(
+                tpl.id
+              )}&session=${encodeURIComponent(chosenOption)}`;
 
-      {/* History List */}
-      {isLoading ? (
-        <div className="bg-white border border-slate-200 rounded-xl p-12 flex flex-col items-center justify-center text-slate-400 gap-2">
-          <Loader2 className="w-6 h-6 animate-spin" />
-          <p className="text-xs font-medium">Memuatkan rekod janaan sekolah...</p>
-        </div>
-      ) : filteredHistory.length === 0 ? (
-        <div className="bg-white border border-slate-200 rounded-xl p-14 text-center">
-          <div className="w-12 h-12 rounded-xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
-            <FileText size={22} />
-          </div>
-          <h3 className="text-sm font-semibold text-ink">Tiada Rekod Janaan Dijumpai</h3>
-          <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-            {searchQuery || filterType !== 'ALL'
-              ? 'Tiada dokumen sepadan dengan carian atau penapis anda.'
-              : 'Setiap kali admin atau guru menjana dokumen DOCX atau PDF di Pembina Buku, rekod akan disimpan di sini secara automatik.'}
-          </p>
-          {!searchQuery && filterType === 'ALL' && (
-            <button
-              onClick={() => navigate('/book-builder')}
-              className="mt-4 px-4 py-2 bg-ink text-white rounded-lg text-xs font-medium hover:opacity-90 transition-opacity"
-            >
-              Pergi ke Pembina Buku
-            </button>
-          )}
-        </div>
-      ) : (
-        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100">
-          {filteredHistory.map((item) => {
-            const isPdf = item.file_type?.toUpperCase() === 'PDF';
-            const isMine = Boolean(currentUserId && item.user_id === currentUserId);
-            const canDelete = isMine || currentUserRole === 'admin';
-
-            return (
-              <div
-                key={item.id}
-                className="p-4 sm:px-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/70 transition-colors"
-              >
-                <div className="flex items-start gap-3.5 min-w-0">
-                  <div
-                    className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 font-bold text-[10px] border ${
-                      isPdf
-                        ? 'bg-rose/10 text-rose border-rose/20'
-                        : 'bg-sky/10 text-sky border-sky/20'
-                    }`}
-                  >
-                    {item.file_type?.toUpperCase() || 'DOC'}
-                  </div>
-
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <h3 className="text-sm font-semibold text-ink truncate">{item.title}</h3>
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-forest/10 text-forest text-[10px] font-semibold">
-                        <CheckCircle2 size={10} /> {item.status || 'Selesai'}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-1 text-xs text-slate-500">
-                      <span className="inline-flex items-center gap-1 text-slate-600 font-medium">
-                        <UserCheck size={12} className="text-slate-400" />
-                        Dijana oleh{' '}
-                        <strong className="font-semibold text-ink">{item.creator_name}</strong>
-                        {isMine && (
-                          <span className="ml-1 px-1.5 py-0.2 rounded bg-slate-100 text-[10px] font-semibold text-slate-600">
-                            Anda
-                          </span>
-                        )}
-                      </span>
-                      <span>&bull;</span>
-                      <span className="inline-flex items-center gap-1">
-                        <Clock size={12} className="text-slate-400" />
-                        {formatDate(item.created_at)}
-                      </span>
-                      {item.file_size && (
-                        <>
-                          <span>&bull;</span>
-                          <span>{item.file_size}</span>
-                        </>
-                      )}
+              return (
+                <div
+                  key={tpl.id}
+                  className="p-5 bg-white rounded-xl border border-slate-200 flex flex-col justify-between hover:border-slate-300 transition-colors"
+                >
+                  <div>
+                    <div className="flex items-start gap-3.5 mb-3">
+                      <div
+                        className={`w-10 h-10 rounded-lg ${tpl.bg} ${tpl.border} border flex items-center justify-center ${tpl.color} shrink-0`}
+                      >
+                        <Icon size={18} strokeWidth={2} />
+                      </div>
+                      <div className="min-w-0">
+                        <h4 className="text-sm font-semibold text-ink leading-tight mb-1">
+                          {tpl.title}
+                        </h4>
+                        <p className="text-xs text-slate-500 leading-relaxed">{tpl.description}</p>
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                {/* Actions */}
-                <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-                  <button
-                    onClick={() => handleLoadAndPreview(item)}
-                    className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-ink rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors"
-                  >
-                    <Eye size={13} className="text-slate-500" /> Pratonton
-                  </button>
-
-                  <button
-                    onClick={() => handleDownloadAgain(item)}
-                    disabled={downloadingId === item.id}
-                    className="px-3 py-1.5 bg-ink hover:opacity-90 text-white rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all disabled:opacity-50"
-                  >
-                    {downloadingId === item.id ? (
-                      <Loader2 size={13} className="animate-spin" />
-                    ) : (
-                      <Download size={13} />
-                    )}
-                    Muat Turun
-                  </button>
-
-                  {canDelete && (
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteRecord(item)}
-                      disabled={deletingId === item.id}
-                      title="Padam rekod janaan"
-                      className="p-1.5 border border-slate-200 hover:border-rose/30 hover:bg-rose/10 text-slate-400 hover:text-rose rounded-lg transition-colors disabled:opacity-50"
+                  <div className="pt-4 mt-2 border-t border-slate-100">
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                      Sesi Penerbitan
+                    </label>
+                    <select
+                      value={chosenOption}
+                      onChange={(e) =>
+                        setSelectedOptions((prev) => ({ ...prev, [tpl.id]: e.target.value }))
+                      }
+                      className="w-full bg-slate-50 border border-slate-200 text-ink font-medium text-xs rounded-lg px-3 py-2 outline-none focus:border-ink/40 transition-all cursor-pointer mb-3"
                     >
-                      {deletingId === item.id ? (
-                        <Loader2 size={13} className="animate-spin" />
-                      ) : (
-                        <Trash2 size={13} />
-                      )}
-                    </button>
-                  )}
+                      {tpl.options.map((opt) => (
+                        <option key={opt} value={opt}>
+                          {opt}
+                        </option>
+                      ))}
+                    </select>
+
+                    <Link
+                      to={targetUrl}
+                      className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-ink bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-lg transition-colors"
+                    >
+                      <Edit3 size={14} />
+                      {tpl.actionText}
+                    </Link>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
-      )}
+
+        <div className="lg:col-span-1 space-y-3">
+          <h3 className="text-sm font-semibold text-ink px-1">Sejarah Penerbitan Buku</h3>
+
+          <div className="bg-white rounded-xl border border-slate-200 p-5 flex flex-col min-h-88">
+            <div className="flex items-center justify-between text-slate-500 mb-4 pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <History size={16} className="text-slate-400" />
+                <span className="text-xs font-semibold text-ink">Versi Terkini</span>
+              </div>
+              <span className="text-[10px] bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md font-bold text-slate-600">
+                {recentExports.length} Rekod
+              </span>
+            </div>
+
+            {isLoading ? (
+              <div className="flex flex-col items-center justify-center flex-1 text-ink gap-2">
+                <Loader2 size={20} className="animate-spin text-ink" />
+                <p className="text-xs font-medium text-slate-500">Memuatkan sejarah...</p>
+              </div>
+            ) : recentExports.length === 0 ? (
+              <div className="flex flex-col items-center justify-center flex-1 text-slate-400 gap-2">
+                <FileText size={28} className="text-slate-300" />
+                <p className="text-xs font-medium">Tiada rekod janaan buku.</p>
+              </div>
+            ) : (
+              <div className="space-y-3 flex-1 overflow-y-auto pr-1">
+                {recentExports.map((file) => {
+                  const meta = getSnapshotForHistory(file);
+                  const creatorName = resolveCreatorName(file, meta);
+                  const isMine = Boolean(currentUserId && file.user_id === currentUserId);
+                  const canDelete = isMine || currentUserRole === 'admin';
+
+                  const tooltipParts = [
+                    meta.school_name,
+                    meta.session ? `Sesi ${meta.session}` : null,
+                    `Dijana oleh ${creatorName}`,
+                    file.created_at ? formatDate(file.created_at) : null,
+                  ].filter(Boolean);
+
+                  return (
+                    <div
+                      key={file.id}
+                      onClick={() => handleOpenHistoryVersion(file)}
+                      title={
+                        tooltipParts.length > 0
+                          ? `${tooltipParts.join(' • ')} — Klik untuk buka dalam Book Builder`
+                          : 'Klik untuk buka atau semak versi janaan ini dalam Book Builder'
+                      }
+                      className="flex items-start gap-3 group cursor-pointer p-1.5 rounded-lg hover:bg-slate-50 transition-colors"
+                    >
+                      <div className="w-8 h-8 rounded-md bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-500 shrink-0">
+                        {file.type === 'pdf' ? (
+                          <FileText size={16} />
+                        ) : (
+                          <FileSpreadsheet size={16} className="text-forest" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-semibold text-ink truncate group-hover:opacity-75 transition-opacity">
+                          {file.name}
+                        </p>
+                        <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-slate-500">
+                          <UserCheck size={11} className="text-slate-400 shrink-0" />
+                          <span className="truncate">
+                            Dijana oleh <strong className="font-semibold text-ink">{creatorName}</strong>
+                            {isMine ? ' (Anda)' : ''}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="text-[10px] font-medium text-slate-400 bg-slate-100 px-1.5 py-0.2 rounded">
+                            {file.size}
+                          </span>
+                          <span className="text-[10px] text-slate-400 truncate">
+                            {formatDate(file.created_at)}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-0.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={(e) => handleDownloadHistoryVersion(e, file)}
+                          disabled={downloadingId === file.id}
+                          title="Muat turun semula versi ini"
+                          className="text-slate-400 hover:text-ink transition-colors opacity-0 group-hover:opacity-100 p-1 disabled:opacity-50"
+                        >
+                          {downloadingId === file.id ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <Download size={14} />
+                          )}
+                        </button>
+                        {canDelete && (
+                          <button
+                            type="button"
+                            onClick={(e) => handleDeleteHistoryVersion(e, file)}
+                            disabled={deletingId === file.id}
+                            title="Padam rekod janaan"
+                            className="text-slate-400 hover:text-rose transition-colors opacity-0 group-hover:opacity-100 p-1 disabled:opacity-50"
+                          >
+                            {deletingId === file.id ? (
+                              <Loader2 size={14} className="animate-spin" />
+                            ) : (
+                              <Trash2 size={14} />
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
