@@ -274,7 +274,7 @@ export default function LarasLayout() {
               >
                 <Settings size={18} /> <span className={labelCls}>Tetapan</span>
               </Link>
-              <Link to="/help" className={navItem(false)} title="Bantuan">
+              <Link to="/help" className={navItem(location.pathname.startsWith('/help'))} title="Bantuan">
                 <HelpCircle size={18} /> <span className={labelCls}>Bantuan</span>
               </Link>
               <button

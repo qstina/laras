@@ -17,6 +17,7 @@ import BookBuilder from './pages/BookBuilder';
 import Settings from './pages/Settings';
 import AcceptInvitation from './pages/AcceptInvitation';
 import WorkloadAnalytics from './pages/WorkloadAnalytics';
+import HelpCenter from './pages/HelpCenter';
 
 const TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -220,6 +221,7 @@ export default function App() {
           <Route path="book-builder" element={<BookBuilder />} />
           <Route path="analytics" element={<WorkloadAnalytics />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="help" element={<HelpCenter />} />
         </Route>
       </Routes>
     </BrowserRouter>
